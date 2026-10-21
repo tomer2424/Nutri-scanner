@@ -12,7 +12,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-192.png">
 <link rel="icon" href="icon-192.png">
-<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="styles.css?v=dev">
 </head>
 <body>
 
@@ -112,6 +112,14 @@
 </main>
 
 <canvas id="crop" hidden></canvas>
-<script type="module" src="app.js"></script>
+<!-- ?v= is rewritten to the commit SHA when CI publishes. GitHub Pages serves
+     every file with max-age=600 and caches each independently, so without this
+     a deploy can pair a fresh index.html with a ten-minute-old app.js: the new
+     markup renders, the code wiring it up is missing, and nothing errors.
+     Versioning the URL means new HTML always asks for a URL no cache has seen,
+     and stale HTML keeps asking for the matching stale JS — consistent either
+     way. A service worker cannot do this job: Chrome serves cached scripts
+     without ever dispatching a fetch event to it. -->
+<script type="module" src="app.js?v=dev"></script>
 </body>
 </html>

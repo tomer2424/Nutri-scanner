@@ -18,8 +18,8 @@ python -m http.server 8000
 ## Tests
 
 ```bash
-node test/run.mjs             # 63 checks, including the live API contract
-node test/run.mjs --offline   # 59 checks, no network needed
+node test/run.mjs             # 90 checks, including the live API contract
+node test/run.mjs --offline   # 86 checks, no network needed
 ```
 
 No dependencies and no test framework — just Node. `app.js` exports nothing and touches the DOM at load, so [test/harness.mjs](test/harness.mjs) stubs the handful of browser APIs it uses, imports **the real file**, fires the listeners it registered, and reads back what it rendered. Nothing in the suite reimplements the app's logic, so a check passing means the shipped code works.
@@ -29,7 +29,7 @@ Two deliberate choices worth knowing before you extend it:
 - **Arithmetic runs against a recorded fixture**, not the live database. Open Food Facts is crowd-sourced and editable; if someone corrects Nutella's entry, asserting `270 kcal` against the live API would fail for reasons that have nothing to do with our code. The live API is still checked, but for its *contract* — that `status: 1` still comes back and all eight nutriment keys `app.js` reads are still present and numeric. That's the thing that would otherwise break silently.
 - **The harness loads `app.js` as a copied `.mjs`.** This isn't incidental. The repo has no `package.json`, so Node treats a bare `.js` as CommonJS, and the CJS cache keys on filename alone — `?v=` cache-busting is silently ignored, the module never re-executes, and a "reload" test passes by reading stale text. That exact false pass hid a real bug during development. For the same reason, any check that reads rendered text after a reload should scribble a sentinel over it first, so "unchanged" can't masquerade as "correctly re-rendered".
 
-The suite covers input validation, scaling, kJ→kcal conversion, UPC-A/EAN-13 normalisation in both directions, the daily counter, saved quick-add meals (including id collisions under a frozen clock, malformed stored rows, and untrusted product names), persistence (corrupt storage, a throwing `setItem`), reset, and every error path.
+The suite covers input validation, scaling, kJ→kcal conversion, UPC-A/EAN-13 normalisation in both directions, the daily counter, the daily log (logging from both add routes, delete-decrements-total, zero clamping, and the counter-equals-log-sum invariant), saved quick-add meals (including id collisions under a frozen clock, malformed stored rows, and untrusted product names), persistence (corrupt storage, a throwing `setItem`), reset, and every error path.
 
 ## The HTTPS requirement
 
@@ -97,6 +97,18 @@ Two details worth knowing:
 - **A missing nutrient contributes 0.** If a product has no protein figure, the results screen shows `—` and adding it contributes 0 g of protein rather than breaking the total.
 
 In iOS Safari Private Browsing, `localStorage` writes throw. The counter still works for the session; it just won't persist.
+
+## Today's log
+
+Every item credited to the counter — from a scan or a quick-add — is logged under **Today's Log** on the home screen, newest first. The `✕` beside an entry removes it *and* subtracts its calories and protein back out of the counter.
+
+The log is written inside `creditTotals()`, the single function both add routes call, so an item cannot be credited without being logged. That's what makes the two reconcilable, and a test asserts the counter always equals the sum of the log — including after a delete.
+
+- **"Today" means "since you last reset"**, same as the counter. There's no midnight rollover, deliberately. Reset Counter clears the totals and the log together.
+- **Subtraction clamps at zero.** The counter is a running sum of rounded values, so a long sequence of adds and deletes shouldn't be able to leave a stray `-0.1` on screen.
+- **The list is capped and scrolls** at ~210px. The addendum places it directly under the counter, which is above the scan button; without a cap a long log would push the main action off-screen. Verified at iPhone viewport: with six entries the scan button still sits at 597px in a 749px viewport.
+
+Stored under `nutri-scanner-history`, with the same validation and iOS Private Browsing guards as the other two keys.
 
 ## Saved quick-add meals
 

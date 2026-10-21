@@ -365,6 +365,166 @@ check("absurdly long names are capped",
 app.store.delete(MEALS_KEY);
 app.store.delete("nutri-scanner-totals");
 
+// ──────────────────────────── today's log ─────────────────────────────
+
+section("today's log");
+
+const HISTORY_KEY = "nutri-scanner-history";
+const TOTALS_KEY = "nutri-scanner-totals";
+const logRows = () => app.el("log-list").children;
+const logLabels = () => logRows().map((row) => row.children[0].textContent);
+const tapLogDelete = (i) => logRows()[i].children[1].listeners.click();
+const storedHistory = () => JSON.parse(app.store.get(HISTORY_KEY) || "[]");
+const emptyStateShown = () => !app.el("log-empty").hidden;
+const sumOf = (field, decimals) =>
+  Number(storedHistory().reduce((total, entry) => total + entry[field], 0).toFixed(decimals));
+
+const clearAll = async () => {
+  app.store.delete(HISTORY_KEY);
+  app.store.delete(MEALS_KEY);
+  app.store.delete(TOTALS_KEY);
+  await app.loadApp();
+};
+
+routes.set(NUTELLA_BARCODE, NUTELLA);
+await clearAll();
+
+check("an empty log shows the empty-state message",
+      emptyStateShown() && logRows().length === 0);
+
+// ── logged from a scan ──
+
+await app.lookup(NUTELLA_BARCODE, 50);
+app.click("btn-add-total");
+await wait(1200);
+
+check("adding from a scan writes a log entry", storedHistory().length === 1, JSON.stringify(storedHistory()));
+const logged = storedHistory()[0];
+check("the entry carries the whole schema",
+      logged.id !== undefined && logged.name === "Nutella" && logged.weight === 50
+      && logged.calories === 270 && logged.protein === 3.1 && Number.isFinite(logged.timestamp),
+      JSON.stringify(logged));
+check("the empty-state message hides once something is logged", !emptyStateShown());
+check("the row renders in the specified format",
+      logLabels()[0] === "Nutella — 50g (270 kcal, 3.1g)", logLabels()[0]);
+check("totals agree with the log", app.totals() === "270 / 3.1", app.totals());
+
+// ── logged from a quick-add ──
+
+await app.lookup(NUTELLA_BARCODE, 100);
+app.click("btn-save-meal");
+app.click("btn-reset");
+tapMeal(0);
+await wait(1200);
+
+check("adding from a quick-add also writes a log entry", storedHistory().length === 2, JSON.stringify(storedHistory()));
+check("the log renders newest first",
+      logLabels()[0].includes("100g") && logLabels()[1].includes("50g"), logLabels().join(" | "));
+check("totals cover both routes", app.totals() === "809 / 9.4", app.totals());
+
+// ── deleting an entry ──
+
+tapLogDelete(0);
+check("deleting removes just that entry", storedHistory().length === 1, JSON.stringify(storedHistory()));
+check("deleting decrements the totals exactly", app.totals() === "270 / 3.1", app.totals());
+check("the remaining entry is untouched",
+      logRows().length === 1 && logLabels()[0].includes("50g"), logLabels().join(" | "));
+
+// Totals and log can only disagree if storage was tampered with, but the
+// subtraction must never leave a negative counter on screen.
+app.store.set(TOTALS_KEY, JSON.stringify({ kcal: 10, protein: 0.5 }));
+await app.loadApp();
+tapLogDelete(0);
+check("totals clamp at zero instead of going negative", app.totals() === "0 / 0", app.totals());
+
+// ── reset clears the log too ──
+
+await clearAll();
+await app.lookup(NUTELLA_BARCODE, 50);
+app.click("btn-add-total");
+await wait(1200);
+check("something is logged before the reset", storedHistory().length === 1);
+
+globalThis.confirm = () => false;
+app.click("btn-reset-counter");
+check("a cancelled reset leaves the log alone", storedHistory().length === 1, JSON.stringify(storedHistory()));
+
+globalThis.confirm = () => true;
+app.click("btn-reset-counter");
+check("reset clears the log", storedHistory().length === 0 && logRows().length === 0, JSON.stringify(storedHistory()));
+check("reset brings the empty state back", emptyStateShown());
+check("reset zeroes the totals", app.totals() === "0 / 0", app.totals());
+
+// ── storage robustness ──
+
+app.store.set(HISTORY_KEY, "not json at all");
+await app.loadApp();
+check("unparseable history loads as an empty log", logRows().length === 0 && emptyStateShown());
+
+app.store.set(HISTORY_KEY, '{"not":"an array"}');
+await app.loadApp();
+check("non-array history loads as an empty log", logRows().length === 0);
+
+app.store.set(HISTORY_KEY, JSON.stringify([
+  { id: 1, name: "Good Entry", weight: 50, calories: 100, protein: 5, timestamp: 1 },
+  { id: 2, name: "No Timestamp", weight: 50, calories: 100, protein: 5 },
+  { id: 3, name: "Bad Calories", weight: 50, calories: "abc", protein: 5, timestamp: 2 },
+  null,
+]));
+await app.loadApp();
+check("malformed log entries are dropped and the good one kept",
+      logRows().length === 1 && logLabels()[0].startsWith("Good Entry"), logLabels().join(" | "));
+check("no NaN reaches the log", !logLabels().some((label) => /NaN/.test(label)));
+
+// ── iOS Private Browsing ──
+
+await clearAll();
+const logSetItem = globalThis.localStorage.setItem;
+globalThis.localStorage.setItem = () => { throw new DOMException("quota", "QuotaExceededError"); };
+
+await app.lookup(NUTELLA_BARCODE, 50);
+let logThrew = null;
+try { app.click("btn-add-total"); } catch (err) { logThrew = err; }
+await wait(1200);
+check("logging survives a throwing setItem", logThrew === null, logThrew && logThrew.message);
+check("the entry still lists for the session without storage",
+      logRows().length === 1, logLabels().join(" | "));
+globalThis.localStorage.setItem = logSetItem;
+
+// ── untrusted names reach the log too ──
+
+routes.set("5555555555555", {
+  status: 1,
+  product: { product_name: NASTY_NAME, nutriments: { "energy-kcal_100g": 100, proteins_100g: 2 } },
+});
+await clearAll();
+await app.lookup("5555555555555", 100);
+app.click("btn-add-total");
+await wait(1200);
+const nastyLogLabel = logRows()[0].children[0];
+check("an untrusted name in the log renders as inert text",
+      nastyLogLabel.textContent.includes(NASTY_NAME) && nastyLogLabel.children.length === 0,
+      nastyLogLabel.textContent.slice(0, 40));
+
+// ── the invariant: the counter is the log's sum ──
+
+await clearAll();
+for (const grams of [50, 100, 25]) {
+  await app.lookup(NUTELLA_BARCODE, grams);
+  app.click("btn-add-total");
+  await wait(1200);
+}
+check("totals equal the sum of the log",
+      app.totals() === `${sumOf("calories", 0)} / ${sumOf("protein", 1)}`,
+      `${app.totals()} vs log sum ${sumOf("calories", 0)} / ${sumOf("protein", 1)}`);
+
+tapLogDelete(1);   // remove the middle entry
+check("totals still equal the sum after a delete",
+      app.totals() === `${sumOf("calories", 0)} / ${sumOf("protein", 1)}`,
+      `${app.totals()} vs log sum ${sumOf("calories", 0)} / ${sumOf("protein", 1)}`);
+
+await clearAll();
+
 // ──────────────────────── live API contract ───────────────────────────
 // Values aren't asserted — only that the response still has the shape app.js
 // reads. This is what would break silently if Open Food Facts changed its API.

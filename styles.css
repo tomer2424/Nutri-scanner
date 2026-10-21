@@ -139,6 +139,53 @@ body {
 
 .totals .btn-link { align-self: center; }
 
+/* ── today's log ── */
+
+.log {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.log-empty { text-align: left; }
+
+/* Capped and scrollable so a long log can't push the scan button off-screen —
+   it sits above the main action, where the addendum asks for it. */
+.log-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 210px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.log-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.log-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.85rem;
+  line-height: 1.3;
+}
+
+.log-row .meal-delete {
+  flex: 0 0 34px;
+  min-height: 34px;
+  font-size: 0.85rem;
+  border: 0;
+}
+
 /* ── saved meals ── */
 
 .meals {

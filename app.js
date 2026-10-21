@@ -19,6 +19,7 @@ const MAX_GRAMS = 10000;
 // live collision risk with any other app published there.
 const TOTALS_KEY = "nutri-scanner-totals";
 const MEALS_KEY = "nutri-scanner-meals";
+const HISTORY_KEY = "nutri-scanner-history";
 const ADDED_FEEDBACK_MS = 800;
 const MAX_MEAL_NAME = 60;
 
@@ -50,6 +51,8 @@ const els = {
   btnResetCounter: $("btn-reset-counter"),
   mealsSection: $("meals-section"),
   mealsList: $("meals-list"),
+  logList: $("log-list"),
+  logEmpty: $("log-empty"),
   errorMessage: $("error-message"),
   errorDetail: $("error-detail"),
   btnErrorReset: $("btn-error-reset"),
@@ -64,6 +67,7 @@ let product = null;      // cached OFF product, so weight edits never refetch
 let engineLabel = "starting…";
 let totals = { kcal: 0, protein: 0 };
 let meals = [];
+let history = [];
 let addedTimer = null;
 let mealAddedTimer = null;
 
@@ -73,9 +77,12 @@ function setState(name) {
   for (const view of VIEWS) $(`view-${view}`).hidden = view !== name;
 
   // Every route to idle passes through here — reset(), init and the
-  // visibilitychange handler — so the list can't go stale via a path that
-  // forgot to refresh it.
-  if (name === "idle") renderMeals();
+  // visibilitychange handler — so the lists can't go stale via a path that
+  // forgot to refresh them.
+  if (name === "idle") {
+    renderMeals();
+    renderHistory();
+  }
 }
 
 function showError(message, detail) {
@@ -586,23 +593,37 @@ function displayed(value, decimals) {
   return value === null ? 0 : Number(format(value, decimals));
 }
 
-// The single path into the daily totals. Both the results-screen button and a
-// saved quick-add go through here, so the two can't drift apart.
-function creditTotals(kcal, protein) {
-  totals.kcal += kcal;
-  totals.protein = displayed(totals.protein + protein, 1);
+// The single path into the daily totals. The results-screen button and a saved
+// quick-add both go through here, and the log entry is written here too — so an
+// item can't be credited without being logged, which is what keeps the log and
+// the totals reconcilable.
+function creditTotals(item) {
+  totals.kcal += item.calories;
+  totals.protein = displayed(totals.protein + item.protein, 1);
   saveTotals();
+
+  history.push({ id: uniqueId(history), ...item, timestamp: Date.now() });
+  writeStored(HISTORY_KEY, history);
+
   renderTotals();
+  // A quick-add happens while the log is already on screen, so it has to
+  // repaint now rather than waiting for the next transition to idle.
+  renderHistory();
 }
 
 function addToTotal() {
   const values = currentValues();
   if (!values) return;
 
-  // Accumulate the rounded values the user actually saw, not full precision.
-  // Two 50 g scoops of Nutella each display as 270 kcal; totalling 539 would
-  // read as a bug even though it's nearer the truth. Worst case: 0.5 kcal/item.
-  creditTotals(displayed(values.kcal, 0), displayed(values.proteins, 1));
+  // Credit the rounded values the user actually saw, not full precision. Two
+  // 50 g scoops of Nutella each display as 270 kcal; totalling 539 would read
+  // as a bug even though it's nearer the truth. Worst case: 0.5 kcal/item.
+  creditTotals({
+    name: productLabel(),
+    weight: values.weight,
+    calories: displayed(values.kcal, 0),
+    protein: displayed(values.proteins, 1),
+  });
 
   els.btnAddTotal.textContent = "Added! ✓";
   els.btnAddTotal.disabled = true;
@@ -618,7 +639,10 @@ function resetCounter() {
   if (!confirm("Are you sure you want to reset your daily calories and protein counter?")) return;
   totals = { kcal: 0, protein: 0 };
   saveTotals();
+  history = [];
+  writeStored(HISTORY_KEY, history);
   renderTotals();
+  renderHistory();
 }
 
 // ────────────────────── saved quick-add meals ─────────────────
@@ -627,26 +651,33 @@ function resetCounter() {
 // Private Browsing, where writes throw: the meal just saved would vanish the
 // moment the app returned home.
 
-function isUsableMeal(meal) {
-  return !!meal
-    && (typeof meal.id === "number" || typeof meal.id === "string")
-    && typeof meal.name === "string"
-    && Number.isFinite(meal.weight)
-    && Number.isFinite(meal.calories)
-    && Number.isFinite(meal.protein);
+// Saved meals and log entries carry the same nutrition fields, so one shape
+// check serves both.
+function hasItemShape(item) {
+  return !!item
+    && (typeof item.id === "number" || typeof item.id === "string")
+    && typeof item.name === "string"
+    && Number.isFinite(item.weight)
+    && Number.isFinite(item.calories)
+    && Number.isFinite(item.protein);
 }
 
 function loadMeals() {
   const parsed = readStored(MEALS_KEY);
   // Drop bad rows rather than render NaN or let one of them take the list down.
-  return Array.isArray(parsed) ? parsed.filter(isUsableMeal) : [];
+  return Array.isArray(parsed) ? parsed.filter(hasItemShape) : [];
 }
 
-function nextMealId() {
-  // Delete targets by id, so a collision would remove the wrong row — or both.
+// Delete targets by id, so a collision would remove the wrong row — or both.
+// Date.now() alone repeats when two items land in the same millisecond.
+function uniqueId(existing) {
   let id = Date.now();
-  while (meals.some((meal) => meal.id === id)) id++;
+  while (existing.some((item) => item.id === id)) id++;
   return id;
+}
+
+function productLabel() {
+  return String(product.product_name || product.product_name_en || "Saved Item").slice(0, MAX_MEAL_NAME);
 }
 
 function saveMeal() {
@@ -654,8 +685,8 @@ function saveMeal() {
   if (!values) return;
 
   meals.push({
-    id: nextMealId(),
-    name: String(product.product_name || product.product_name_en || "Saved Item").slice(0, MAX_MEAL_NAME),
+    id: uniqueId(meals),
+    name: productLabel(),
     weight: values.weight,
     // Through displayed(), so a quick-add credits exactly what the screen showed.
     calories: displayed(values.kcal, 0),
@@ -671,7 +702,12 @@ function addSavedMeal(id, button) {
   const meal = meals.find((item) => item.id === id);
   if (!meal) return;
 
-  creditTotals(meal.calories, meal.protein);
+  creditTotals({
+    name: meal.name,
+    weight: meal.weight,
+    calories: meal.calories,
+    protein: meal.protein,
+  });
 
   // The totals sit directly above, so they visibly move; this just confirms the
   // tap landed on the row you meant. renderMeals() restores the label.
@@ -720,6 +756,64 @@ function renderMeals() {
   mealAddedTimer = null;
   els.mealsSection.hidden = meals.length === 0;
   els.mealsList.replaceChildren(...meals.map(mealRow));
+}
+
+// ──────────────────────── today's log ─────────────────────────
+// Every credit to the daily totals is written here by creditTotals(), so the
+// log and the counter always describe the same set of items. Deleting an entry
+// subtracts it back out.
+
+function isLogEntry(entry) {
+  return hasItemShape(entry) && Number.isFinite(entry.timestamp);
+}
+
+function loadHistory() {
+  const parsed = readStored(HISTORY_KEY);
+  return Array.isArray(parsed) ? parsed.filter(isLogEntry) : [];
+}
+
+function deleteHistoryEntry(id) {
+  const index = history.findIndex((entry) => entry.id === id);
+  if (index === -1) return;
+
+  const [entry] = history.splice(index, 1);
+
+  // Clamped at zero: the totals are a running sum of rounded values, so a
+  // sequence of adds and deletes can otherwise leave a stray -0.1 behind.
+  totals.kcal = Math.max(0, totals.kcal - entry.calories);
+  totals.protein = Math.max(0, displayed(totals.protein - entry.protein, 1));
+
+  saveTotals();
+  writeStored(HISTORY_KEY, history);
+  renderTotals();
+  renderHistory();
+}
+
+function historyRow(entry) {
+  const row = document.createElement("div");
+  row.className = "log-row";
+
+  const label = document.createElement("span");
+  label.className = "log-label";
+  // textContent: these names came from Open Food Facts and are persisted here.
+  label.textContent = `${entry.name} — ${format(entry.weight, 1)}g `
+    + `(${format(entry.calories, 0)} kcal, ${format(entry.protein, 1)}g)`;
+
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "meal-delete";
+  remove.textContent = "✕";
+  remove.setAttribute("aria-label", `Remove ${entry.name} from today's log`);
+  remove.addEventListener("click", () => deleteHistoryEntry(entry.id));
+
+  row.append(label, remove);
+  return row;
+}
+
+function renderHistory() {
+  els.logEmpty.hidden = history.length > 0;
+  // Newest first; slice() so the stored order stays append-ordered.
+  els.logList.replaceChildren(...history.slice().reverse().map(historyRow));
 }
 
 // ───────────────────────── interactions ───────────────────────
@@ -836,7 +930,8 @@ if ("serviceWorker" in navigator) {
 
 totals = loadTotals();
 meals = loadMeals();
+history = loadHistory();
 renderTotals();
-setState("idle");   // also renders the saved meals list
+setState("idle");   // also renders the saved meals and today's log
 setDiagnostics();
 ensureDetector().catch(() => { /* reported via the diagnostics line */ });

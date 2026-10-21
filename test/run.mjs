@@ -213,6 +213,158 @@ check("network failure says network error",
       app.el("error-message").textContent);
 serveFixtures();
 
+// ──────────────────────────── saved meals ─────────────────────────────
+
+section("saved meals");
+
+const MEALS_KEY = "nutri-scanner-meals";
+const mealRows = () => app.el("meals-list").children;
+const mealLabels = () => mealRows().map((row) => row.children[0].textContent);
+const tapMeal = (i) => mealRows()[i].children[0].listeners.click();
+const tapDelete = (i) => mealRows()[i].children[1].listeners.click();
+const storedMeals = () => JSON.parse(app.store.get(MEALS_KEY) || "[]");
+
+// The not-found checks above reset `routes`, so re-register the fixture.
+routes.set(NUTELLA_BARCODE, NUTELLA);
+
+app.store.delete(MEALS_KEY);
+app.store.delete("nutri-scanner-totals");
+await app.loadApp();
+check("with nothing saved, the section is hidden", app.el("meals-section").hidden === true);
+
+await app.lookup(NUTELLA_BARCODE, 50);
+app.click("btn-save-meal");
+check("save button confirms and disables",
+      app.el("btn-save-meal").textContent === "Saved! ✓" && app.el("btn-save-meal").disabled);
+check("meal stored with the values that were displayed",
+      storedMeals().length === 1 && storedMeals()[0].name === "Nutella"
+      && storedMeals()[0].weight === 50 && storedMeals()[0].calories === 270
+      && storedMeals()[0].protein === 3.1, JSON.stringify(storedMeals()[0]));
+
+app.click("btn-reset");
+check("section appears on idle once something is saved", app.el("meals-section").hidden === false);
+check("label matches the addendum's format",
+      mealLabels()[0] === "Nutella — 50g (270 kcal, 3.1g)", mealLabels()[0]);
+check("save button is usable again after reset",
+      app.el("btn-save-meal").textContent === "Save as Quick Add" && !app.el("btn-save-meal").disabled);
+
+check("totals start at 0 / 0", app.totals() === "0 / 0", app.totals());
+tapMeal(0);
+const viaQuickAdd = app.totals();
+check("tapping a saved meal credits the totals", viaQuickAdd === "270 / 3.1", viaQuickAdd);
+
+// Both paths run through creditTotals(), and the saved figures came from
+// displayed() — so a quick-add must land on exactly the same total as scanning
+// the item and pressing Add. This is the invariant that keeps them in step.
+globalThis.confirm = () => true;
+app.click("btn-reset-counter");
+await app.lookup(NUTELLA_BARCODE, 50);
+app.click("btn-add-total");
+await wait(1200);
+check("a quick-add equals adding the same item live",
+      app.totals() === viaQuickAdd, `live ${app.totals()} vs quick-add ${viaQuickAdd}`);
+app.click("btn-reset-counter");
+
+// Delete targets by id, so ids must stay distinct even when the clock doesn't move.
+app.store.delete(MEALS_KEY);
+await app.loadApp();
+const realNow = Date.now;
+Date.now = () => 1700000000000;
+await app.lookup(NUTELLA_BARCODE, 50);
+app.click("btn-save-meal");
+app.click("btn-reset");
+await app.lookup(NUTELLA_BARCODE, 100);
+app.click("btn-save-meal");
+app.click("btn-reset");
+Date.now = realNow;
+
+const bothMeals = storedMeals();
+check("two saves in the same millisecond still get distinct ids",
+      bothMeals.length === 2 && bothMeals[0].id !== bothMeals[1].id,
+      bothMeals.map((meal) => meal.id).join(", "));
+check("both meals are listed", mealRows().length === 2, mealLabels().join(" | "));
+
+tapDelete(0);
+check("delete removes only that row",
+      mealRows().length === 1 && mealLabels()[0].includes("100g"), mealLabels().join(" | "));
+check("delete is persisted",
+      storedMeals().length === 1 && storedMeals()[0].id === bothMeals[1].id,
+      JSON.stringify(storedMeals()));
+
+// ── storage robustness ──
+
+app.store.set(MEALS_KEY, '{"not":"an array"}');
+await app.loadApp();
+check("non-array meals storage loads as an empty list",
+      mealRows().length === 0 && app.el("meals-section").hidden === true);
+
+app.store.set(MEALS_KEY, "garbage");
+await app.loadApp();
+check("unparseable meals storage loads as an empty list", mealRows().length === 0);
+
+app.store.set(MEALS_KEY, JSON.stringify([
+  { id: 1, name: "Good Row", weight: 50, calories: 100, protein: 5 },
+  { id: 2, name: "Bad Weight", weight: "abc", calories: 100, protein: 5 },
+  { id: 3, name: "Null Calories", weight: 50, calories: null, protein: 5 },
+  { name: "No Id", weight: 50, calories: 100, protein: 5 },
+  null,
+]));
+await app.loadApp();
+check("malformed rows are dropped and the good one kept",
+      mealRows().length === 1 && mealLabels()[0].startsWith("Good Row"), mealLabels().join(" | "));
+check("no NaN reaches the rendered list", !mealLabels().some((label) => /NaN/.test(label)));
+
+// ── iOS Private Browsing ──
+// The addendum says to re-read storage on every idle transition. Done literally
+// that fails here: the write throws, so the meal just saved would vanish the
+// moment the app returned home. Rendering from memory is why this passes.
+
+app.store.delete(MEALS_KEY);
+await app.loadApp();
+const realSetItem = globalThis.localStorage.setItem;
+globalThis.localStorage.setItem = () => { throw new DOMException("quota", "QuotaExceededError"); };
+
+await app.lookup(NUTELLA_BARCODE, 50);
+let saveThrew = null;
+try { app.click("btn-save-meal"); } catch (err) { saveThrew = err; }
+check("saving survives a throwing setItem", saveThrew === null, saveThrew && saveThrew.message);
+
+app.click("btn-reset");
+check("the meal still lists for the session when storage is unavailable",
+      mealRows().length === 1, mealLabels().join(" | "));
+tapMeal(0);
+check("and it still credits the totals", app.totals() === "270 / 3.1", app.totals());
+globalThis.localStorage.setItem = realSetItem;
+
+// ── untrusted product names ──
+// Open Food Facts is editable by anyone, and these names are persisted and
+// re-rendered on every idle transition.
+
+const NASTY_NAME = '<img src=x onerror="alert(1)">';
+routes.set("4444444444444", {
+  status: 1,
+  product: {
+    product_name: NASTY_NAME + "A".repeat(200),
+    nutriments: { "energy-kcal_100g": 100, proteins_100g: 2 },
+  },
+});
+
+app.store.delete(MEALS_KEY);
+await app.loadApp();
+await app.lookup("4444444444444", 100);
+app.click("btn-save-meal");
+app.click("btn-reset");
+
+const nastyButton = mealRows()[0].children[0];
+check("an untrusted product name renders as inert literal text",
+      nastyButton.textContent.includes(NASTY_NAME) && nastyButton.children.length === 0,
+      nastyButton.textContent.slice(0, 40));
+check("absurdly long names are capped",
+      storedMeals()[0].name.length === 60, `${storedMeals()[0].name.length} chars`);
+
+app.store.delete(MEALS_KEY);
+app.store.delete("nutri-scanner-totals");
+
 // ──────────────────────── live API contract ───────────────────────────
 // Values aren't asserted — only that the response still has the shape app.js
 // reads. This is what would break silently if Open Food Facts changed its API.

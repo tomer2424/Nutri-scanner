@@ -14,8 +14,13 @@ const SCAN_INTERVAL_MS = 100;
 const BAND_FRACTION = 0.4;   // centre slice of the frame we actually decode
 const FETCH_TIMEOUT_MS = 10000;
 const MAX_GRAMS = 10000;
-const STORAGE_KEY = "nutri-scanner-totals";
+// Namespaced because every GitHub Pages project under the same account shares
+// one origin, and therefore one localStorage. A bare "savedMeals" would be a
+// live collision risk with any other app published there.
+const TOTALS_KEY = "nutri-scanner-totals";
+const MEALS_KEY = "nutri-scanner-meals";
 const ADDED_FEEDBACK_MS = 800;
+const MAX_MEAL_NAME = 60;
 
 const $ = (id) => document.getElementById(id);
 
@@ -38,10 +43,13 @@ const els = {
   secondary: $("secondary"),
   resultNote: $("result-note"),
   btnAddTotal: $("btn-add-total"),
+  btnSaveMeal: $("btn-save-meal"),
   btnReset: $("btn-reset"),
   totalKcal: $("total-kcal"),
   totalProtein: $("total-protein"),
   btnResetCounter: $("btn-reset-counter"),
+  mealsSection: $("meals-section"),
+  mealsList: $("meals-list"),
   errorMessage: $("error-message"),
   errorDetail: $("error-detail"),
   btnErrorReset: $("btn-error-reset"),
@@ -55,12 +63,19 @@ let grams = null;        // weight committed when the scan started
 let product = null;      // cached OFF product, so weight edits never refetch
 let engineLabel = "starting…";
 let totals = { kcal: 0, protein: 0 };
+let meals = [];
 let addedTimer = null;
+let mealAddedTimer = null;
 
 // ───────────────────────── view state ─────────────────────────
 
 function setState(name) {
   for (const view of VIEWS) $(`view-${view}`).hidden = view !== name;
+
+  // Every route to idle passes through here — reset(), init and the
+  // visibilitychange handler — so the list can't go stale via a path that
+  // forgot to refresh it.
+  if (name === "idle") renderMeals();
 }
 
 function showError(message, detail) {
@@ -525,30 +540,36 @@ function renderNutrition() {
 // Totals run until you press Reset Counter — there is no midnight rollover, so
 // "daily" is the user's discipline rather than the app's.
 
-function loadTotals() {
+function readStored(key) {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { kcal: 0, protein: 0 };
-
-    // Validate rather than trust: one NaN in storage would poison every
-    // subsequent add, and the totals would never recover without a reset.
-    const parsed = JSON.parse(raw);
-    return {
-      kcal: Number.isFinite(parsed?.kcal) ? parsed.kcal : 0,
-      protein: Number.isFinite(parsed?.protein) ? parsed.protein : 0,
-    };
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : null;
   } catch {
-    return { kcal: 0, protein: 0 };
+    return null;   // absent, unreadable and unparseable all mean "start fresh"
   }
 }
 
-function saveTotals() {
+function writeStored(key, value) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(totals));
+    localStorage.setItem(key, JSON.stringify(value));
   } catch {
     // iOS Safari in Private Browsing throws on every write. Swallowing it keeps
-    // the counter working for the session; it just won't survive a reload.
+    // the feature working for the session; it just won't survive a reload.
   }
+}
+
+function loadTotals() {
+  // Validate rather than trust: one NaN in storage would poison every
+  // subsequent add, and the totals would never recover without a reset.
+  const parsed = readStored(TOTALS_KEY);
+  return {
+    kcal: Number.isFinite(parsed?.kcal) ? parsed.kcal : 0,
+    protein: Number.isFinite(parsed?.protein) ? parsed.protein : 0,
+  };
+}
+
+function saveTotals() {
+  writeStored(TOTALS_KEY, totals);
 }
 
 function renderTotals() {
@@ -565,6 +586,15 @@ function displayed(value, decimals) {
   return value === null ? 0 : Number(format(value, decimals));
 }
 
+// The single path into the daily totals. Both the results-screen button and a
+// saved quick-add go through here, so the two can't drift apart.
+function creditTotals(kcal, protein) {
+  totals.kcal += kcal;
+  totals.protein = displayed(totals.protein + protein, 1);
+  saveTotals();
+  renderTotals();
+}
+
 function addToTotal() {
   const values = currentValues();
   if (!values) return;
@@ -572,10 +602,7 @@ function addToTotal() {
   // Accumulate the rounded values the user actually saw, not full precision.
   // Two 50 g scoops of Nutella each display as 270 kcal; totalling 539 would
   // read as a bug even though it's nearer the truth. Worst case: 0.5 kcal/item.
-  totals.kcal += displayed(values.kcal, 0);
-  totals.protein = displayed(totals.protein + displayed(values.proteins, 1), 1);
-  saveTotals();
-  renderTotals();
+  creditTotals(displayed(values.kcal, 0), displayed(values.proteins, 1));
 
   els.btnAddTotal.textContent = "Added! ✓";
   els.btnAddTotal.disabled = true;
@@ -592,6 +619,107 @@ function resetCounter() {
   totals = { kcal: 0, protein: 0 };
   saveTotals();
   renderTotals();
+}
+
+// ────────────────────── saved quick-add meals ─────────────────
+// The in-memory array is the source of truth, loaded once at init. Re-reading
+// storage on every idle transition would look equivalent but loses data on iOS
+// Private Browsing, where writes throw: the meal just saved would vanish the
+// moment the app returned home.
+
+function isUsableMeal(meal) {
+  return !!meal
+    && (typeof meal.id === "number" || typeof meal.id === "string")
+    && typeof meal.name === "string"
+    && Number.isFinite(meal.weight)
+    && Number.isFinite(meal.calories)
+    && Number.isFinite(meal.protein);
+}
+
+function loadMeals() {
+  const parsed = readStored(MEALS_KEY);
+  // Drop bad rows rather than render NaN or let one of them take the list down.
+  return Array.isArray(parsed) ? parsed.filter(isUsableMeal) : [];
+}
+
+function nextMealId() {
+  // Delete targets by id, so a collision would remove the wrong row — or both.
+  let id = Date.now();
+  while (meals.some((meal) => meal.id === id)) id++;
+  return id;
+}
+
+function saveMeal() {
+  const values = currentValues();
+  if (!values) return;
+
+  meals.push({
+    id: nextMealId(),
+    name: String(product.product_name || product.product_name_en || "Saved Item").slice(0, MAX_MEAL_NAME),
+    weight: values.weight,
+    // Through displayed(), so a quick-add credits exactly what the screen showed.
+    calories: displayed(values.kcal, 0),
+    protein: displayed(values.proteins, 1),
+  });
+  writeStored(MEALS_KEY, meals);
+
+  els.btnSaveMeal.textContent = "Saved! ✓";
+  els.btnSaveMeal.disabled = true;
+}
+
+function addSavedMeal(id, button) {
+  const meal = meals.find((item) => item.id === id);
+  if (!meal) return;
+
+  creditTotals(meal.calories, meal.protein);
+
+  // The totals sit directly above, so they visibly move; this just confirms the
+  // tap landed on the row you meant. renderMeals() restores the label.
+  button.textContent = "Added! ✓";
+  button.disabled = true;
+  clearTimeout(mealAddedTimer);
+  mealAddedTimer = setTimeout(renderMeals, ADDED_FEEDBACK_MS);
+}
+
+function deleteMeal(id) {
+  meals = meals.filter((meal) => meal.id !== id);
+  writeStored(MEALS_KEY, meals);
+  renderMeals();
+}
+
+function mealLabel(meal) {
+  return `${meal.name} — ${format(meal.weight, 1)}g `
+    + `(${format(meal.calories, 0)} kcal, ${format(meal.protein, 1)}g)`;
+}
+
+function mealRow(meal) {
+  const row = document.createElement("div");
+  row.className = "meal-row";
+
+  const add = document.createElement("button");
+  add.type = "button";
+  add.className = "btn btn-secondary meal-add";
+  // textContent, never innerHTML: product names come from Open Food Facts,
+  // which anyone can edit, and they are persisted and re-rendered here.
+  add.textContent = mealLabel(meal);
+  add.addEventListener("click", () => addSavedMeal(meal.id, add));
+
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "meal-delete";
+  remove.textContent = "✕";
+  remove.setAttribute("aria-label", `Delete ${meal.name}`);
+  remove.addEventListener("click", () => deleteMeal(meal.id));
+
+  row.append(add, remove);
+  return row;
+}
+
+function renderMeals() {
+  clearTimeout(mealAddedTimer);
+  mealAddedTimer = null;
+  els.mealsSection.hidden = meals.length === 0;
+  els.mealsList.replaceChildren(...meals.map(mealRow));
 }
 
 // ───────────────────────── interactions ───────────────────────
@@ -631,6 +759,8 @@ function reset() {
   addedTimer = null;
   els.btnAddTotal.textContent = "Add to Daily Total";
   els.btnAddTotal.disabled = false;
+  els.btnSaveMeal.textContent = "Save as Quick Add";
+  els.btnSaveMeal.disabled = false;
 
   product = null;
   grams = null;
@@ -652,6 +782,7 @@ els.btnCancelScan.addEventListener("click", reset);
 els.btnReset.addEventListener("click", reset);
 els.btnErrorReset.addEventListener("click", reset);
 els.btnAddTotal.addEventListener("click", addToTotal);
+els.btnSaveMeal.addEventListener("click", saveMeal);
 els.btnResetCounter.addEventListener("click", resetCounter);
 
 els.weight.addEventListener("input", () => { els.weightError.hidden = true; });
@@ -704,7 +835,8 @@ if ("serviceWorker" in navigator) {
 }
 
 totals = loadTotals();
+meals = loadMeals();
 renderTotals();
-setState("idle");
+setState("idle");   // also renders the saved meals list
 setDiagnostics();
 ensureDetector().catch(() => { /* reported via the diagnostics line */ });

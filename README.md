@@ -18,8 +18,8 @@ python -m http.server 8000
 ## Tests
 
 ```bash
-node test/run.mjs             # 41 checks, including the live API contract
-node test/run.mjs --offline   # 37 checks, no network needed
+node test/run.mjs             # 63 checks, including the live API contract
+node test/run.mjs --offline   # 59 checks, no network needed
 ```
 
 No dependencies and no test framework — just Node. `app.js` exports nothing and touches the DOM at load, so [test/harness.mjs](test/harness.mjs) stubs the handful of browser APIs it uses, imports **the real file**, fires the listeners it registered, and reads back what it rendered. Nothing in the suite reimplements the app's logic, so a check passing means the shipped code works.
@@ -29,7 +29,7 @@ Two deliberate choices worth knowing before you extend it:
 - **Arithmetic runs against a recorded fixture**, not the live database. Open Food Facts is crowd-sourced and editable; if someone corrects Nutella's entry, asserting `270 kcal` against the live API would fail for reasons that have nothing to do with our code. The live API is still checked, but for its *contract* — that `status: 1` still comes back and all eight nutriment keys `app.js` reads are still present and numeric. That's the thing that would otherwise break silently.
 - **The harness loads `app.js` as a copied `.mjs`.** This isn't incidental. The repo has no `package.json`, so Node treats a bare `.js` as CommonJS, and the CJS cache keys on filename alone — `?v=` cache-busting is silently ignored, the module never re-executes, and a "reload" test passes by reading stale text. That exact false pass hid a real bug during development. For the same reason, any check that reads rendered text after a reload should scribble a sentinel over it first, so "unchanged" can't masquerade as "correctly re-rendered".
 
-The suite covers input validation, scaling, kJ→kcal conversion, UPC-A/EAN-13 normalisation in both directions, the daily counter, persistence (including corrupt storage and a throwing `setItem`), reset, and every error path.
+The suite covers input validation, scaling, kJ→kcal conversion, UPC-A/EAN-13 normalisation in both directions, the daily counter, saved quick-add meals (including id collisions under a frozen clock, malformed stored rows, and untrusted product names), persistence (corrupt storage, a throwing `setItem`), reset, and every error path.
 
 ## The HTTPS requirement
 
@@ -89,6 +89,19 @@ Two details worth knowing:
 - **A missing nutrient contributes 0.** If a product has no protein figure, the results screen shows `—` and adding it contributes 0 g of protein rather than breaking the total.
 
 In iOS Safari Private Browsing, `localStorage` writes throw. The counter still works for the session; it just won't persist.
+
+## Saved quick-add meals
+
+**Save as Quick Add** on a results screen stores the product and that portion weight as a one-tap button on the home screen — `Nutella — 50g (270 kcal, 3.1g)`. Tapping it adds those values to the daily total without rescanning; the `✕` beside it deletes that meal immediately, with no confirmation.
+
+A quick-add runs through the same `creditTotals()` call as the Add button, and the saved figures were produced by the same `displayed()` rounding, so adding a saved meal lands on exactly the same total as scanning the item and adding it live. A test asserts that.
+
+Two notes:
+
+- **The list renders from memory, not from storage on every visit.** The addendum specified re-reading storage on each return to the home screen. That would lose data in iOS Private Browsing, where writes throw: the meal you just saved would vanish the moment the app returned home. The array is loaded once at startup and written on every change, so a saved meal survives the session even when storage is unavailable — like the daily totals already do.
+- **Stored under `nutri-scanner-meals`**, not a bare `savedMeals`. Every GitHub Pages project on `tomer2424.github.io` shares one origin and therefore one `localStorage`, so an unnamespaced key would be a live collision risk with any other app published there.
+
+Product names come from Open Food Facts, which anyone can edit, and they're persisted and re-rendered on every visit home. Everything goes in via `textContent` and names are capped at 60 characters; a test saves a name containing `<img onerror=...>` and asserts it renders as inert literal text.
 
 ## Manual barcode entry
 

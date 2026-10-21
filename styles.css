@@ -139,6 +139,53 @@ body {
 
 .totals .btn-link { align-self: center; }
 
+/* ── saved meals ── */
+
+.meals {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+
+.meals-title {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.meals-list { display: flex; flex-direction: column; gap: 8px; }
+
+.meal-row { display: flex; gap: 8px; align-items: stretch; }
+
+.meal-add {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  font-weight: 550;
+  font-size: 0.92rem;
+  line-height: 1.3;
+}
+
+/* Deliberately narrow and visually distinct from the add button beside it:
+   delete is immediate, so the two targets must not be easy to confuse. */
+.meal-delete {
+  flex: 0 0 46px;
+  min-height: 52px;
+  font-size: 1rem;
+  font-family: inherit;
+  color: var(--muted);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.meal-delete:active { color: var(--danger); border-color: var(--danger); }
+
 /* ── viewfinder ── */
 
 .viewfinder {

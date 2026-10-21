@@ -51,6 +51,11 @@
              pattern="[0-9]*" autocomplete="off" placeholder="Barcode digits" enterkeyhint="go">
       <button class="btn btn-secondary" type="submit">Look up</button>
     </form>
+
+    <div id="meals-section" class="meals" hidden>
+      <h2 class="meals-title">Saved Meals</h2>
+      <div id="meals-list" class="meals-list"></div>
+    </div>
   </section>
 
   <!-- ─────────── SCANNING ─────────── -->
@@ -89,6 +94,7 @@
     <p id="result-note" class="note" hidden></p>
 
     <button id="btn-add-total" class="btn btn-primary" type="button">Add to Daily Total</button>
+    <button id="btn-save-meal" class="btn btn-secondary" type="button">Save as Quick Add</button>
     <button id="btn-reset" class="btn btn-secondary" type="button">Scan Another Product</button>
   </section>
 

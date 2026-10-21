@@ -47,6 +47,21 @@ The line at the bottom of the screen shows which engine is live:
 
 The wasm decoder is fetched from jsDelivr on first load (~1 MB) and warmed up before the camera opens.
 
+## Daily counter
+
+The home screen shows running totals for calories and protein. On a results screen, **Add to Daily Total** adds the current item and returns you home with the totals updated. Totals are kept in `localStorage`, so they survive refreshes and relaunching the installed app.
+
+**There is no midnight rollover.** Totals run until you press **Reset Counter** (which asks for confirmation first), however many days that spans — so "daily" is your discipline, not the app's. This is deliberate, not an oversight.
+
+There's no undo either: a mis-tap can only be cleared by resetting the whole counter. The Add button returns straight home, so a double-tap can't land twice.
+
+Two details worth knowing:
+
+- **Totals add the rounded numbers you saw, not full precision.** 50 g of Nutella is 269.5 kcal, displayed as `270`. Add it twice and you get `540`, not `539`. Totalling the exact values would be marginally more accurate but would contradict arithmetic you can do in your head, which reads as a bug. The cost is at most 0.5 kcal per item — noise next to crowd-sourced data and an eyeballed weight.
+- **A missing nutrient contributes 0.** If a product has no protein figure, the results screen shows `—` and adding it contributes 0 g of protein rather than breaking the total.
+
+In iOS Safari Private Browsing, `localStorage` writes throw. The counter still works for the session; it just won't persist.
+
 ## Manual barcode entry
 
 The idle screen has an **Enter barcode manually** link. It's there on purpose, not as a nicety: it drives the exact same lookup and calculation path with the camera out of the loop, so when something breaks you can tell which half is at fault. It also rescues barcodes the decoder simply won't read.
@@ -62,6 +77,8 @@ On desktop:
 5. DevTools → Offline → any lookup → "Network error, please try again."
 6. Deny camera permission → a real message, not a dead screen.
 7. In the console, run `BarcodeDetector.getSupportedFormats = async () => []` **before** the page finishes loading to simulate a Play-Services-less Redmi. The diagnostics line should read `engine: wasm` and scanning should still work. Worth doing deliberately — it's the one failure mode you can't reproduce on a phone that happens to have Play Services.
+8. Add `3017620422003` at 50 g twice → totals read `540 kcal` / `6.2 g`, matching the `270` / `3.1` shown each time.
+9. Refresh the page → totals are still there. Reset Counter → cancel leaves them alone, confirm zeroes them.
 
 On both phones:
 
@@ -71,6 +88,7 @@ On both phones:
 | Scan 3–4 real products | note time-to-decode and failures | same — compare against the iPhone |
 | Permissions | Safari's prompt | Chrome's prompt **and** MIUI's own permission manager |
 | Install | Add to Home Screen | Chrome should offer "Install app" |
+| Counter persists | add two items, force-quit, reopen from the icon | same |
 
 Do the scanning tests in normal indoor light. There's no torch button, so what you get is the honest baseline.
 

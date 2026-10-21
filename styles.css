@@ -125,6 +125,20 @@ body {
 
 .hint { margin: 0; color: var(--muted); font-size: 0.9rem; text-align: center; }
 
+/* ── daily counter ── */
+/* Reuses .headline and .stat so the totals read as the same kind of object as
+   the per-item numbers; only the separator below is new. */
+
+.totals {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.totals .btn-link { align-self: center; }
+
 /* ── viewfinder ── */
 
 .viewfinder {

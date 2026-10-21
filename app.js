@@ -14,6 +14,8 @@ const SCAN_INTERVAL_MS = 100;
 const BAND_FRACTION = 0.4;   // centre slice of the frame we actually decode
 const FETCH_TIMEOUT_MS = 10000;
 const MAX_GRAMS = 10000;
+const STORAGE_KEY = "nutri-scanner-totals";
+const ADDED_FEEDBACK_MS = 800;
 
 const $ = (id) => document.getElementById(id);
 
@@ -35,7 +37,11 @@ const els = {
   headline: $("headline"),
   secondary: $("secondary"),
   resultNote: $("result-note"),
+  btnAddTotal: $("btn-add-total"),
   btnReset: $("btn-reset"),
+  totalKcal: $("total-kcal"),
+  totalProtein: $("total-protein"),
+  btnResetCounter: $("btn-reset-counter"),
   errorMessage: $("error-message"),
   errorDetail: $("error-detail"),
   btnErrorReset: $("btn-error-reset"),
@@ -48,6 +54,8 @@ const VIEWS = ["idle", "scanning", "loading", "results", "error"];
 let grams = null;        // weight committed when the scan started
 let product = null;      // cached OFF product, so weight edits never refetch
 let engineLabel = "starting…";
+let totals = { kcal: 0, protein: 0 };
+let addedTimer = null;
 
 // ───────────────────────── view state ─────────────────────────
 
@@ -432,19 +440,39 @@ function renderResults(scannedCode) {
   setState("results");
 }
 
-// Recalculates from the cached product — never refetches.
-function renderNutrition() {
+// Every scaled number the results screen shows comes from here, and so does
+// every number "Add to Daily Total" adds. One source of truth, so the total can
+// never drift from what was on screen.
+function currentValues() {
   const weight = toNumber(els.weightResults.value);
-  if (weight === null || weight <= 0) return;
+  if (!product || weight === null || weight <= 0) return null;
 
   const n = product.nutriments || {};
+  return {
+    weight,
+    kcal: scale(kcalPer100(n), weight),
+    proteins: scale(toNumber(n.proteins_100g), weight),
+    carbohydrates: scale(toNumber(n.carbohydrates_100g), weight),
+    fat: scale(toNumber(n.fat_100g), weight),
+    sugars: scale(toNumber(n.sugars_100g), weight),
+    saturatedFat: scale(toNumber(n["saturated-fat_100g"]), weight),
+    fiber: scale(toNumber(n.fiber_100g), weight),
+    salt: scale(toNumber(n.salt_100g), weight),
+  };
+}
+
+// Recalculates from the cached product — never refetches.
+function renderNutrition() {
+  const values = currentValues();
+  if (!values) return;
+
   const unit = basisUnit(product);
 
   const headline = [
-    { label: "Calories", value: scale(kcalPer100(n), weight), unit: "kcal", decimals: 0 },
-    { label: "Protein", value: scale(toNumber(n.proteins_100g), weight), unit: "g", decimals: 1 },
-    { label: "Carbs", value: scale(toNumber(n.carbohydrates_100g), weight), unit: "g", decimals: 1 },
-    { label: "Fat", value: scale(toNumber(n.fat_100g), weight), unit: "g", decimals: 1 },
+    { label: "Calories", value: values.kcal, unit: "kcal", decimals: 0 },
+    { label: "Protein", value: values.proteins, unit: "g", decimals: 1 },
+    { label: "Carbs", value: values.carbohydrates, unit: "g", decimals: 1 },
+    { label: "Fat", value: values.fat, unit: "g", decimals: 1 },
   ];
 
   els.headline.replaceChildren(...headline.map((stat) => {
@@ -469,10 +497,10 @@ function renderNutrition() {
   }));
 
   const secondary = [
-    { label: "Sugars", value: scale(toNumber(n.sugars_100g), weight), decimals: 1 },
-    { label: "Saturated fat", value: scale(toNumber(n["saturated-fat_100g"]), weight), decimals: 1 },
-    { label: "Fiber", value: scale(toNumber(n.fiber_100g), weight), decimals: 1 },
-    { label: "Salt", value: scale(toNumber(n.salt_100g), weight), decimals: 2 },
+    { label: "Sugars", value: values.sugars, decimals: 1 },
+    { label: "Saturated fat", value: values.saturatedFat, decimals: 1 },
+    { label: "Fiber", value: values.fiber, decimals: 1 },
+    { label: "Salt", value: values.salt, decimals: 2 },
   ];
 
   els.secondary.replaceChildren(...secondary.map((row) => {
@@ -490,7 +518,80 @@ function renderNutrition() {
     return wrapper;
   }));
 
-  setDiagnostics(`${format(weight, 1)} ${unit} of ${product.product_name || "product"}`);
+  setDiagnostics(`${format(values.weight, 1)} ${unit} of ${product.product_name || "product"}`);
+}
+
+// ────────────────────── daily counter ─────────────────────────
+// Totals run until you press Reset Counter — there is no midnight rollover, so
+// "daily" is the user's discipline rather than the app's.
+
+function loadTotals() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return { kcal: 0, protein: 0 };
+
+    // Validate rather than trust: one NaN in storage would poison every
+    // subsequent add, and the totals would never recover without a reset.
+    const parsed = JSON.parse(raw);
+    return {
+      kcal: Number.isFinite(parsed?.kcal) ? parsed.kcal : 0,
+      protein: Number.isFinite(parsed?.protein) ? parsed.protein : 0,
+    };
+  } catch {
+    return { kcal: 0, protein: 0 };
+  }
+}
+
+function saveTotals() {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(totals));
+  } catch {
+    // iOS Safari in Private Browsing throws on every write. Swallowing it keeps
+    // the counter working for the session; it just won't survive a reload.
+  }
+}
+
+function renderTotals() {
+  els.totalKcal.textContent = format(totals.kcal, 0);
+  els.totalProtein.textContent = format(totals.protein, 1);
+}
+
+// Reads back exactly what format() put on screen. Rounding the number a second
+// time by any other route is not equivalent: 50 g of Nutella is 3.15 g protein,
+// which toFixed(1) renders "3.1" (the stored double is 3.1499…) while
+// Math.round(3.15 * 10) / 10 gives 3.2, because 3.15 * 10 lands on exactly 31.5
+// in float64. Going through format() makes "adds what it showed you" literal.
+function displayed(value, decimals) {
+  return value === null ? 0 : Number(format(value, decimals));
+}
+
+function addToTotal() {
+  const values = currentValues();
+  if (!values) return;
+
+  // Accumulate the rounded values the user actually saw, not full precision.
+  // Two 50 g scoops of Nutella each display as 270 kcal; totalling 539 would
+  // read as a bug even though it's nearer the truth. Worst case: 0.5 kcal/item.
+  totals.kcal += displayed(values.kcal, 0);
+  totals.protein = displayed(totals.protein + displayed(values.proteins, 1), 1);
+  saveTotals();
+  renderTotals();
+
+  els.btnAddTotal.textContent = "Added! ✓";
+  els.btnAddTotal.disabled = true;
+
+  clearTimeout(addedTimer);
+  addedTimer = setTimeout(() => {
+    addedTimer = null;
+    reset();
+  }, ADDED_FEEDBACK_MS);
+}
+
+function resetCounter() {
+  if (!confirm("Are you sure you want to reset your daily calories and protein counter?")) return;
+  totals = { kcal: 0, protein: 0 };
+  saveTotals();
+  renderTotals();
 }
 
 // ───────────────────────── interactions ───────────────────────
@@ -523,6 +624,14 @@ function beginScan() {
 
 function reset() {
   stopCamera();
+
+  // Cancel any pending "Added! ✓" hand-off, so a stray timer can't yank the
+  // user back to idle after they've already navigated somewhere else.
+  clearTimeout(addedTimer);
+  addedTimer = null;
+  els.btnAddTotal.textContent = "Add to Daily Total";
+  els.btnAddTotal.disabled = false;
+
   product = null;
   grams = null;
   els.weight.value = "";
@@ -542,6 +651,8 @@ els.btnScan.addEventListener("click", beginScan);
 els.btnCancelScan.addEventListener("click", reset);
 els.btnReset.addEventListener("click", reset);
 els.btnErrorReset.addEventListener("click", reset);
+els.btnAddTotal.addEventListener("click", addToTotal);
+els.btnResetCounter.addEventListener("click", resetCounter);
 
 els.weight.addEventListener("input", () => { els.weightError.hidden = true; });
 els.weight.addEventListener("keydown", (event) => {
@@ -592,6 +703,8 @@ if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("sw.js").catch(() => { /* not fatal */ });
 }
 
+totals = loadTotals();
+renderTotals();
 setState("idle");
 setDiagnostics();
 ensureDetector().catch(() => { /* reported via the diagnostics line */ });

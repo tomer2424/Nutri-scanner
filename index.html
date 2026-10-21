@@ -22,6 +22,20 @@
 
   <!-- ───────────── IDLE ───────────── -->
   <section id="view-idle" class="view">
+    <div class="totals">
+      <div class="headline">
+        <div class="stat">
+          <div class="stat-value"><span id="total-kcal">0</span><span class="stat-unit"> kcal</span></div>
+          <div class="stat-label">Total calories</div>
+        </div>
+        <div class="stat">
+          <div class="stat-value"><span id="total-protein">0</span><span class="stat-unit"> g</span></div>
+          <div class="stat-label">Total protein</div>
+        </div>
+      </div>
+      <button id="btn-reset-counter" class="btn btn-link" type="button">Reset Counter</button>
+    </div>
+
     <label class="field-label" for="weight">Weight in grams</label>
     <input id="weight" class="weight-input" type="number" inputmode="decimal"
            min="0" max="10000" step="any" placeholder="e.g. 50" enterkeyhint="go">
@@ -74,7 +88,8 @@
     <dl id="secondary" class="secondary"></dl>
     <p id="result-note" class="note" hidden></p>
 
-    <button id="btn-reset" class="btn btn-primary" type="button">Scan Another Product</button>
+    <button id="btn-add-total" class="btn btn-primary" type="button">Add to Daily Total</button>
+    <button id="btn-reset" class="btn btn-secondary" type="button">Scan Another Product</button>
   </section>
 
   <!-- ──────────── ERROR ───────────── -->

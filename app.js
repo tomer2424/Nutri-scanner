@@ -67,6 +67,12 @@ const els = {
   btnEditGoals: $("btn-edit-goals"),
   targetsForm: $("targets-form"),
   targetsError: $("targets-error"),
+  btnCustomToggle: $("btn-custom-toggle"),
+  customForm: $("custom-form"),
+  customName: $("custom-name"),
+  customError: $("custom-error"),
+  customSaveMeal: $("custom-save-meal"),
+  btnCustomSubmit: $("btn-custom-submit"),
   mealsSection: $("meals-section"),
   mealsList: $("meals-list"),
   logList: $("log-list"),
@@ -89,6 +95,7 @@ let meals = [];
 let history = [];
 let addedTimer = null;
 let mealAddedTimer = null;
+let customTimer = null;
 
 // ───────────────────────── view state ─────────────────────────
 
@@ -809,9 +816,14 @@ function deleteMeal(id) {
   renderMeals();
 }
 
-function mealLabel(meal) {
-  return `${meal.name} — ${format(meal.weight, 1)}g `
-    + `(${format(meal.calories, 0)} kcal, ${format(meal.protein, 1)}g)`;
+// Shared by saved-meal buttons and log rows. The weight is omitted when there
+// isn't one — a manually entered item has no portion weight, and "— 0g" would
+// read as a measurement rather than an absence.
+function itemLabel(item) {
+  const parts = [item.name];
+  if (item.weight > 0) parts.push(`— ${format(item.weight, 1)}g`);
+  parts.push(`(${format(item.calories, 0)} kcal, ${format(item.protein, 1)}g)`);
+  return parts.join(" ");
 }
 
 function mealRow(meal) {
@@ -823,7 +835,7 @@ function mealRow(meal) {
   add.className = "btn btn-secondary meal-add";
   // textContent, never innerHTML: product names come from Open Food Facts,
   // which anyone can edit, and they are persisted and re-rendered here.
-  add.textContent = mealLabel(meal);
+  add.textContent = itemLabel(meal);
   add.addEventListener("click", () => addSavedMeal(meal.id, add));
 
   const remove = document.createElement("button");
@@ -842,6 +854,92 @@ function renderMeals() {
   mealAddedTimer = null;
   els.mealsSection.hidden = meals.length === 0;
   els.mealsList.replaceChildren(...meals.map(mealRow));
+}
+
+// ────────────────────── custom manual entry ───────────────────
+// Logs an item with no barcode and no API lookup, straight through
+// creditTotals() — so it lands in the totals and today's log by the same path
+// as a scan, with no separate bookkeeping to keep in step.
+
+function readMacroField(key, label) {
+  const raw = $(`custom-${key}`).value.trim();
+  if (raw === "") return { value: 0 };          // a blank field means zero
+
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return { error: `${label} must be a number.` };
+  if (value < 0) return { error: `${label} can't be negative.` };
+  if (value > MAX_TARGET) return { error: `${label} is over ${MAX_TARGET} — check for a typo.` };
+  return { value };
+}
+
+function closeCustomForm() {
+  els.customForm.hidden = true;
+  els.customError.hidden = true;
+  els.btnCustomToggle.setAttribute("aria-expanded", "false");
+}
+
+function toggleCustomForm() {
+  if (!els.customForm.hidden) {
+    closeCustomForm();
+    return;
+  }
+  els.customForm.hidden = false;
+  els.customError.hidden = true;
+  els.btnCustomToggle.setAttribute("aria-expanded", "true");
+  els.customName.focus();
+}
+
+function clearCustomForm() {
+  els.customName.value = "";
+  for (const macro of MACROS) $(`custom-${macro.key}`).value = "";
+  els.customSaveMeal.checked = false;
+}
+
+function submitCustom(event) {
+  event.preventDefault();
+
+  const item = { name: els.customName.value.trim().slice(0, MAX_MEAL_NAME) || "Custom Entry", weight: 0 };
+
+  for (const macro of MACROS) {
+    const { value, error } = readMacroField(macro.key, macro.label);
+    if (error) {
+      els.customError.textContent = error;
+      els.customError.hidden = false;
+      $(`custom-${macro.key}`).focus();
+      return;
+    }
+    // Through displayed(), like every other route into the totals.
+    item[macro.key] = displayed(value, macro.decimals);
+  }
+
+  // An all-blank submission would otherwise add a meaningless "0 kcal" row that
+  // the user then has to delete.
+  if (MACROS.every((macro) => item[macro.key] === 0)) {
+    els.customError.textContent = "Enter at least one value.";
+    els.customError.hidden = false;
+    $(`custom-${MACROS[0].key}`).focus();
+    return;
+  }
+
+  els.customError.hidden = true;
+  creditTotals(item);
+
+  if (els.customSaveMeal.checked) {
+    meals.push({ id: uniqueId(meals), ...item });
+    writeStored(MEALS_KEY, meals);
+    renderMeals();
+  }
+
+  clearCustomForm();
+  els.btnCustomSubmit.textContent = "Logged! ✓";
+  els.btnCustomSubmit.disabled = true;
+
+  clearTimeout(customTimer);
+  customTimer = setTimeout(() => {
+    customTimer = null;
+    els.btnCustomSubmit.textContent = "Log it";
+    els.btnCustomSubmit.disabled = false;
+  }, ADDED_FEEDBACK_MS);
 }
 
 // ───────────────────────── daily targets ──────────────────────
@@ -941,9 +1039,9 @@ function historyRow(entry) {
 
   const label = document.createElement("span");
   label.className = "log-label";
-  // textContent: these names came from Open Food Facts and are persisted here.
-  label.textContent = `${entry.name} — ${format(entry.weight, 1)}g `
-    + `(${format(entry.calories, 0)} kcal, ${format(entry.protein, 1)}g)`;
+  // textContent: these names come from Open Food Facts or the custom-entry
+  // field — both untrusted, and both persisted and re-rendered here.
+  label.textContent = itemLabel(entry);
 
   const remove = document.createElement("button");
   remove.type = "button";
@@ -1011,6 +1109,8 @@ function reset() {
   els.manualForm.hidden = true;
   els.btnManualToggle.setAttribute("aria-expanded", "false");
   closeTargetsForm();
+  closeCustomForm();
+  clearCustomForm();
   els.headline.replaceChildren();
   els.secondary.replaceChildren();
   setState("idle");
@@ -1027,6 +1127,8 @@ els.btnSaveMeal.addEventListener("click", saveMeal);
 els.btnResetCounter.addEventListener("click", resetCounter);
 els.btnEditGoals.addEventListener("click", toggleTargetsForm);
 els.targetsForm.addEventListener("submit", saveTargets);
+els.btnCustomToggle.addEventListener("click", toggleCustomForm);
+els.customForm.addEventListener("submit", submitCustom);
 
 els.weight.addEventListener("input", () => { els.weightError.hidden = true; });
 els.weight.addEventListener("keydown", (event) => {
@@ -1081,7 +1183,9 @@ targets = loadTargets();
 totals = loadTotals();
 meals = loadMeals();
 history = loadHistory();
-closeTargetsForm();   // the markup ships it hidden; own that state in code too
+// The markup ships these hidden; own that state in code too.
+closeTargetsForm();
+closeCustomForm();
 renderTotals();
 setState("idle");   // also renders the saved meals and today's log
 setDiagnostics();

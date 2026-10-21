@@ -684,6 +684,141 @@ check("unparseable targets fall back to the defaults",
 app.store.delete(TARGETS_KEY);
 await clearAll();
 
+// ───────────────────── custom manual entry ────────────────────────────
+
+section("custom manual entry");
+
+const setCustom = (key, value) => { app.el(`custom-${key}`).value = String(value); };
+const fireCustom = () => app.el("custom-form").listeners.submit({ preventDefault() {} });
+const customError = () => (app.el("custom-error").hidden ? null : app.el("custom-error").textContent);
+const clearCustomFields = () => {
+  app.el("custom-name").value = "";
+  for (const key of ["calories", "protein", "carbs", "fat"]) setCustom(key, "");
+  app.el("custom-save-meal").checked = false;
+};
+
+await clearAll();
+
+check("the custom form starts hidden", app.el("custom-form").hidden === true);
+app.click("btn-custom-toggle");
+check("the toggle opens it", app.el("custom-form").hidden === false);
+
+// ── validation ──
+
+for (const [key, bad, why] of [
+  ["calories", "-5", "a negative value"],
+  ["protein", "abc", "a non-number"],
+  ["carbs", "999999", "an implausible value"],
+]) {
+  clearCustomFields();
+  setCustom("calories", 100);
+  setCustom(key, bad);
+  app.el("custom-error").hidden = true;
+  fireCustom();
+  check(`${why} in ${key} is rejected`, customError() !== null, customError());
+  check(`nothing is logged when ${key} is rejected`, storedHistory().length === 0, JSON.stringify(storedHistory()));
+}
+
+clearCustomFields();
+fireCustom();
+check("an entirely blank submission is rejected",
+      customError() === "Enter at least one value.", customError());
+check("and logs nothing", storedHistory().length === 0);
+
+// ── a valid custom entry ──
+
+clearCustomFields();
+app.el("custom-name").value = "Homemade Soup";
+setCustom("calories", 250);
+setCustom("protein", 20);
+// carbs and fat deliberately blank — they must read as 0, not NaN
+fireCustom();
+
+check("a valid entry logs", storedHistory().length === 1, JSON.stringify(storedHistory()));
+check("blank macro fields default to zero",
+      storedHistory()[0].carbs === 0 && storedHistory()[0].fat === 0,
+      JSON.stringify(storedHistory()[0]));
+check("it credits every macro", app.macros() === "250 / 20 / 0 / 0", app.macros());
+check("the log row omits the weight rather than printing 0g",
+      logLabels()[0] === "Homemade Soup (250 kcal, 20g)", logLabels()[0]);
+check("the form clears after logging",
+      app.el("custom-name").value === "" && app.el("custom-calories").value === "",
+      `${app.el("custom-name").value} / ${app.el("custom-calories").value}`);
+check("the button confirms", app.el("btn-custom-submit").textContent === "Logged! ✓");
+
+await wait(1200);
+check("the button becomes usable again",
+      app.el("btn-custom-submit").textContent === "Log it" && !app.el("btn-custom-submit").disabled);
+
+// ── deleting a custom entry ──
+
+tapLogDelete(0);
+check("deleting a custom entry decrements the totals", app.macros() === "0 / 0 / 0 / 0", app.macros());
+check("and removes it from storage", storedHistory().length === 0, JSON.stringify(storedHistory()));
+
+// ── name fallback and length cap ──
+
+await clearAll();
+app.click("btn-custom-toggle");
+clearCustomFields();
+setCustom("calories", 100);
+fireCustom();
+check("a blank name falls back to Custom Entry",
+      storedHistory()[0].name === "Custom Entry", storedHistory()[0].name);
+
+clearCustomFields();
+app.el("custom-name").value = "N".repeat(200);
+setCustom("calories", 100);
+fireCustom();
+check("an absurdly long name is capped",
+      storedHistory()[1].name.length === 60, `${storedHistory()[1].name.length} chars`);
+
+// ── optionally saving as a quick-add ──
+
+await clearAll();
+app.click("btn-custom-toggle");
+clearCustomFields();
+app.el("custom-name").value = "Protein Shake";
+setCustom("calories", 180);
+setCustom("protein", 30);
+fireCustom();
+check("unchecked, it does not become a saved meal", storedMeals().length === 0, JSON.stringify(storedMeals()));
+
+clearCustomFields();
+app.el("custom-name").value = "Protein Shake";
+setCustom("calories", 180);
+setCustom("protein", 30);
+app.el("custom-save-meal").checked = true;
+fireCustom();
+check("checked, it is also saved as a quick-add",
+      storedMeals().length === 1 && storedMeals()[0].name === "Protein Shake"
+      && storedMeals()[0].calories === 180, JSON.stringify(storedMeals()));
+check("the saved meal shows without a weight",
+      mealLabels()[0] === "Protein Shake (180 kcal, 30g)", mealLabels()[0]);
+
+tapMeal(0);
+await wait(1200);
+check("the custom quick-add credits correctly when tapped",
+      app.macros() === "540 / 90 / 0 / 0", app.macros());
+
+// ── untrusted custom names ──
+
+await clearAll();
+app.click("btn-custom-toggle");
+clearCustomFields();
+app.el("custom-name").value = NASTY_NAME;
+setCustom("calories", 100);
+fireCustom();
+
+const customNastyRow = logRows()[0].children[0];
+check("a custom name is rendered as inert literal text",
+      customNastyRow.textContent.includes(NASTY_NAME) && customNastyRow.children.length === 0,
+      customNastyRow.textContent.slice(0, 40));
+check("it is stored verbatim rather than mangled",
+      storedHistory()[0].name === NASTY_NAME, storedHistory()[0].name);
+
+await clearAll();
+
 // ──────────────────────── live API contract ───────────────────────────
 // Values aren't asserted — only that the response still has the shape app.js
 // reads. This is what would break silently if Open Food Facts changed its API.

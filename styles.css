@@ -181,6 +181,24 @@ body {
   color: var(--muted);
 }
 
+.custom-form { display: flex; flex-direction: column; gap: 12px; }
+
+.checkbox-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.88rem;
+  color: var(--muted);
+}
+
+/* Big enough to hit with a thumb; the browser default is ~13px. */
+.checkbox-field input {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--accent);
+  flex-shrink: 0;
+}
+
 /* ── today's log ── */
 
 .log {

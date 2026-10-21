@@ -18,8 +18,8 @@ python -m http.server 8000
 ## Tests
 
 ```bash
-node test/run.mjs             # 126 checks, including the live API contract
-node test/run.mjs --offline   # 122 checks, no network needed
+node test/run.mjs             # 153 checks, including the live API contract
+node test/run.mjs --offline   # 149 checks, no network needed
 ```
 
 No dependencies and no test framework — just Node. `app.js` exports nothing and touches the DOM at load, so [test/harness.mjs](test/harness.mjs) stubs the handful of browser APIs it uses, imports **the real file**, fires the listeners it registered, and reads back what it rendered. Nothing in the suite reimplements the app's logic, so a check passing means the shipped code works.
@@ -132,6 +132,16 @@ Two notes:
 - **Stored under `nutri-scanner-meals`**, not a bare `savedMeals`. Every GitHub Pages project on `tomer2424.github.io` shares one origin and therefore one `localStorage`, so an unnamespaced key would be a live collision risk with any other app published there.
 
 Product names come from Open Food Facts, which anyone can edit, and they're persisted and re-rendered on every visit home. Everything goes in via `textContent` and names are capped at 60 characters; a test saves a name containing `<img onerror=...>` and asserts it renders as inert literal text.
+
+## Custom manual entry
+
+**Add a custom item** on the home screen logs something with no barcode and no API lookup: an optional name plus calories, protein, carbs and fat. Blank macro fields count as 0; negative or non-numeric values are rejected inline, and an entirely blank submission is refused rather than adding a meaningless `0 kcal` row. A checkbox optionally saves the item as a Quick Add at the same time.
+
+It calls the same `creditTotals()` as a scan, so the totals, the progress bars and Today's Log all update through one path with no separate bookkeeping.
+
+Custom items have no portion weight, so row labels omit it — `Homemade Soup (250 kcal, 20g)` rather than `— 0g`, which would read as a measurement instead of an absence. `itemLabel()` is shared by log rows and saved meals, so both render consistently.
+
+The name is untrusted input and goes in via `textContent`, capped at 60 characters. A browser test logs a name containing an `onerror` payload and asserts the row has zero child elements and the handler never fired.
 
 ## Manual barcode entry
 

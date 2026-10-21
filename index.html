@@ -83,6 +83,44 @@
       <button class="btn btn-secondary" type="submit">Look up</button>
     </form>
 
+    <button id="btn-custom-toggle" class="btn btn-link" type="button"
+            aria-expanded="false" aria-controls="custom-form">Add a custom item</button>
+
+    <!-- novalidate for the same reason as the goals form: the app does its own
+         validation with specific inline messages, and native constraint checks
+         would fire first and suppress them. -->
+    <form id="custom-form" class="custom-form" novalidate hidden>
+      <input id="custom-name" class="text-input" type="text" autocomplete="off"
+             maxlength="60" placeholder="Item name (optional)">
+
+      <div class="targets-grid">
+        <label class="target-field">
+          <span>Calories (kcal)</span>
+          <input id="custom-calories" class="text-input" type="number" inputmode="decimal" min="0" step="any" placeholder="0">
+        </label>
+        <label class="target-field">
+          <span>Protein (g)</span>
+          <input id="custom-protein" class="text-input" type="number" inputmode="decimal" min="0" step="any" placeholder="0">
+        </label>
+        <label class="target-field">
+          <span>Carbs (g)</span>
+          <input id="custom-carbs" class="text-input" type="number" inputmode="decimal" min="0" step="any" placeholder="0">
+        </label>
+        <label class="target-field">
+          <span>Fat (g)</span>
+          <input id="custom-fat" class="text-input" type="number" inputmode="decimal" min="0" step="any" placeholder="0">
+        </label>
+      </div>
+
+      <label class="checkbox-field">
+        <input id="custom-save-meal" type="checkbox">
+        <span>Also save as a Quick Add</span>
+      </label>
+
+      <p id="custom-error" class="error-text" role="alert" hidden></p>
+      <button id="btn-custom-submit" class="btn btn-secondary" type="submit">Log it</button>
+    </form>
+
     <div id="meals-section" class="meals" hidden>
       <h2 class="meals-title">Saved Meals</h2>
       <div id="meals-list" class="meals-list"></div>

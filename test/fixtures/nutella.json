@@ -1,0 +1,24 @@
+{
+  "_comment": "Recorded from world.openfoodfacts.org/api/v2/product/3017620422003.json on 2026-10-21, trimmed to the fields app.js requests. Open Food Facts is crowd-sourced and editable, so the arithmetic checks run against this frozen copy rather than the live entry. The live API contract is checked separately in run.mjs.",
+  "status": 1,
+  "code": "3017620422003",
+  "product": {
+    "product_name": "Nutella",
+    "brands": "Nutella, Ferrero",
+    "image_small_url": "https://images.openfoodfacts.org/images/products/301/762/042/2003/front_en.635.200.jpg",
+    "quantity": "400 g e",
+    "nutrition_data_per": "100g",
+    "nutriments": {
+      "energy-kcal_100g": 539,
+      "energy_100g": 2252,
+      "energy_unit": "kJ",
+      "proteins_100g": 6.3,
+      "carbohydrates_100g": 57.5,
+      "fat_100g": 30.9,
+      "sugars_100g": 56.3,
+      "saturated-fat_100g": 10.6,
+      "fiber_100g": 0,
+      "salt_100g": 0.107
+    }
+  }
+}

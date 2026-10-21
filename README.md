@@ -15,6 +15,22 @@ python -m http.server 8000
 
 `localhost` counts as a secure context, so the camera works there. Opening the same server over your LAN address (`http://192.168.x.x:8000`) will **not** work — see below.
 
+## Tests
+
+```bash
+node test/run.mjs             # 41 checks, including the live API contract
+node test/run.mjs --offline   # 37 checks, no network needed
+```
+
+No dependencies and no test framework — just Node. `app.js` exports nothing and touches the DOM at load, so [test/harness.mjs](test/harness.mjs) stubs the handful of browser APIs it uses, imports **the real file**, fires the listeners it registered, and reads back what it rendered. Nothing in the suite reimplements the app's logic, so a check passing means the shipped code works.
+
+Two deliberate choices worth knowing before you extend it:
+
+- **Arithmetic runs against a recorded fixture**, not the live database. Open Food Facts is crowd-sourced and editable; if someone corrects Nutella's entry, asserting `270 kcal` against the live API would fail for reasons that have nothing to do with our code. The live API is still checked, but for its *contract* — that `status: 1` still comes back and all eight nutriment keys `app.js` reads are still present and numeric. That's the thing that would otherwise break silently.
+- **The harness loads `app.js` as a copied `.mjs`.** This isn't incidental. The repo has no `package.json`, so Node treats a bare `.js` as CommonJS, and the CJS cache keys on filename alone — `?v=` cache-busting is silently ignored, the module never re-executes, and a "reload" test passes by reading stale text. That exact false pass hid a real bug during development. For the same reason, any check that reads rendered text after a reload should scribble a sentinel over it first, so "unchanged" can't masquerade as "correctly re-rendered".
+
+The suite covers input validation, scaling, kJ→kcal conversion, UPC-A/EAN-13 normalisation in both directions, the daily counter, persistence (including corrupt storage and a throwing `setItem`), reset, and every error path.
+
 ## The HTTPS requirement
 
 Both iOS Safari and Android Chrome expose `navigator.mediaDevices` only in a secure context. A plain `http://` address — including a LAN IP — gives the browser no camera access at all, and the failure is quiet. That's why the app is deployed to GitHub Pages rather than served off a laptop.

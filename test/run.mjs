@@ -130,7 +130,7 @@ await wait(1200);
 section("persistence");
 
 check("totals are written to localStorage",
-      app.store.get("nutri-scanner-totals") === JSON.stringify({ kcal: 540, protein: 6.2 }),
+      app.store.get("nutri-scanner-totals") === JSON.stringify({ calories: 540, protein: 6.2, carbs: 57.6, fat: 30.8 }),
       app.store.get("nutri-scanner-totals"));
 
 // Scribbling over the rendered text first: without this, "stale text that was
@@ -173,7 +173,7 @@ globalThis.confirm = () => true;
 app.click("btn-reset-counter");
 check("confirming zeroes the totals", app.totals() === "0 / 0", app.totals());
 check("reset clears storage",
-      app.store.get("nutri-scanner-totals") === JSON.stringify({ kcal: 0, protein: 0 }),
+      app.store.get("nutri-scanner-totals") === JSON.stringify({ calories: 0, protein: 0, carbs: 0, fat: 0 }),
       app.store.get("nutri-scanner-totals"));
 
 // ────────────────────────────── edge cases ────────────────────────────
@@ -523,6 +523,165 @@ check("totals still equal the sum after a delete",
       app.totals() === `${sumOf("calories", 0)} / ${sumOf("protein", 1)}`,
       `${app.totals()} vs log sum ${sumOf("calories", 0)} / ${sumOf("protein", 1)}`);
 
+await clearAll();
+
+// ───────────────────── four macros and daily targets ──────────────────
+
+section("four macros");
+
+const TARGETS_KEY = "nutri-scanner-targets";
+const storedTargets = () => JSON.parse(app.store.get(TARGETS_KEY) || "null");
+const setTarget = (key, value) => { app.el(`target-${key}`).value = String(value); };
+const submitTargets = () => app.el("targets-form").listeners.submit({ preventDefault() {} });
+
+app.store.delete(TARGETS_KEY);
+await clearAll();
+
+check("four counter cards render", app.cards().length === 4, String(app.cards().length));
+check("cards show current against the default target",
+      app.cards()[0].startsWith("0 / 2000 kcal") && app.cards()[2].startsWith("0 / 250 g"),
+      app.cards().join(" | "));
+check("all four macros start at zero", app.macros() === "0 / 0 / 0 / 0", app.macros());
+
+// ── crediting all four ──
+
+await app.lookup(NUTELLA_BARCODE, 50);
+app.click("btn-add-total");
+await wait(1200);
+
+// 50 g of Nutella: 539/2 kcal, 6.3/2 protein, 57.5/2 carbs, 30.9/2 fat.
+check("a scan credits all four macros", app.macros() === "270 / 3.1 / 28.8 / 15.4", app.macros());
+check("the log entry stores all four",
+      storedHistory()[0].carbs === 28.8 && storedHistory()[0].fat === 15.4,
+      JSON.stringify(storedHistory()[0]));
+check("progress bar reflects calories against target (270/2000)",
+      app.meter("calories") === `${(270 / 2000) * 100}%`, app.meter("calories"));
+
+// ── quick-add carries all four too ──
+
+await app.lookup(NUTELLA_BARCODE, 100);
+app.click("btn-save-meal");
+check("a saved meal stores all four",
+      storedMeals()[0].carbs === 57.5 && storedMeals()[0].fat === 30.9,
+      JSON.stringify(storedMeals()[0]));
+app.click("btn-reset");
+tapMeal(0);
+await wait(1200);
+check("a quick-add credits all four", app.macros() === "809 / 9.4 / 86.3 / 46.3", app.macros());
+
+// ── deleting decrements all four ──
+
+tapLogDelete(0);
+check("deleting decrements all four", app.macros() === "270 / 3.1 / 28.8 / 15.4", app.macros());
+
+app.store.set(TOTALS_KEY, JSON.stringify({ calories: 5, protein: 0.1, carbs: 1, fat: 0.2 }));
+await app.loadApp();
+tapLogDelete(0);
+check("every macro clamps at zero", app.macros() === "0 / 0 / 0 / 0", app.macros());
+
+// ── targets: edit, validate, persist ──
+
+await clearAll();
+check("goals form starts hidden", app.el("targets-form").hidden === true);
+
+app.click("btn-edit-goals");
+check("Edit Goals opens the form", app.el("targets-form").hidden === false);
+check("the form opens pre-filled with the saved targets",
+      app.el("target-calories").value === "2000" && app.el("target-fat").value === "70",
+      `${app.el("target-calories").value} / ${app.el("target-fat").value}`);
+
+for (const [key, bad, why] of [
+  ["calories", "", "empty"], ["protein", "0", "zero"],
+  ["carbs", "-5", "negative"], ["fat", "abc", "not a number"],
+]) {
+  for (const macro of ["calories", "protein", "carbs", "fat"]) setTarget(macro, 100);
+  setTarget(key, bad);
+  app.el("targets-error").hidden = true;
+  submitTargets();
+  check(`a ${why} ${key} target is rejected`,
+        !app.el("targets-error").hidden && app.el("targets-form").hidden === false,
+        app.el("targets-error").textContent);
+  check(`a rejected save commits nothing`, storedTargets() === null, JSON.stringify(storedTargets()));
+}
+
+setTarget("calories", 1500);
+setTarget("protein", 120);
+setTarget("carbs", 180);
+setTarget("fat", 50);
+submitTargets();
+
+check("valid goals are saved",
+      JSON.stringify(storedTargets()) === JSON.stringify({ calories: 1500, protein: 120, carbs: 180, fat: 50 }),
+      JSON.stringify(storedTargets()));
+check("saving closes the form", app.el("targets-form").hidden === true);
+check("cards update to the new targets immediately",
+      app.cards()[0].startsWith("0 / 1500 kcal"), app.cards()[0]);
+
+await app.loadApp();
+check("targets survive a reload", app.cards()[0].startsWith("0 / 1500 kcal"), app.cards()[0]);
+check("a reset leaves targets alone", (() => {
+  globalThis.confirm = () => true;
+  app.click("btn-reset-counter");
+  return app.cards()[0].startsWith("0 / 1500 kcal");
+})(), app.cards()[0]);
+
+// ── progress bar capping ──
+
+app.store.set(TARGETS_KEY, JSON.stringify({ calories: 100, protein: 1, carbs: 1, fat: 1 }));
+await clearAll();   // clearAll deliberately leaves targets in place
+await app.lookup(NUTELLA_BARCODE, 50);
+app.click("btn-add-total");
+await wait(1200);
+check("an overshooting bar caps at 100%", app.meter("calories") === "100%", app.meter("calories"));
+check("the card still shows the real total, not the capped one",
+      app.cards()[0].startsWith("270 / 100 kcal"), app.cards()[0]);
+
+// ── legacy stored shapes ──
+
+app.store.delete(TARGETS_KEY);
+app.store.set(TOTALS_KEY, JSON.stringify({ kcal: 540, protein: 6.2 }));   // pre-carbs/fat
+app.store.set(MEALS_KEY, JSON.stringify([
+  { id: 1, name: "Legacy Meal", weight: 50, calories: 270, protein: 3.1 },
+]));
+app.store.set(HISTORY_KEY, JSON.stringify([
+  { id: 2, name: "Legacy Entry", weight: 50, calories: 270, protein: 3.1, timestamp: 1 },
+]));
+await app.loadApp();
+
+check("legacy totals keep their calories and default the rest to zero",
+      app.macros() === "540 / 6.2 / 0 / 0", app.macros());
+check("legacy meal still lists", mealLabels().length === 1 && mealLabels()[0].startsWith("Legacy Meal"), mealLabels().join(" | "));
+check("legacy log entry still lists", logLabels().length === 1 && logLabels()[0].startsWith("Legacy Entry"), logLabels().join(" | "));
+check("no NaN anywhere from the legacy shapes",
+      !/NaN/.test(app.macros() + app.cards().join("") + mealLabels().join("") + logLabels().join("")),
+      app.macros());
+
+tapMeal(0);
+await wait(1200);
+check("adding a legacy meal treats its missing macros as zero",
+      app.macros() === "810 / 9.3 / 0 / 0", app.macros());
+
+tapLogDelete(0);
+check("deleting a legacy log entry decrements without NaN",
+      !/NaN/.test(app.macros()), app.macros());
+
+await clearAll();
+app.store.delete(TARGETS_KEY);
+
+// ── corrupt targets ──
+
+app.store.set(TARGETS_KEY, JSON.stringify({ calories: "abc", protein: -5, carbs: 180 }));
+await app.loadApp();
+check("bad target fields fall back individually, keeping the good one",
+      app.cards()[0].startsWith("0 / 2000 kcal") && app.cards()[2].startsWith("0 / 180 g"),
+      app.cards().join(" | "));
+
+app.store.set(TARGETS_KEY, "not json");
+await app.loadApp();
+check("unparseable targets fall back to the defaults",
+      app.cards()[0].startsWith("0 / 2000 kcal"), app.cards()[0]);
+
+app.store.delete(TARGETS_KEY);
 await clearAll();
 
 // ──────────────────────── live API contract ───────────────────────────

@@ -20,8 +20,24 @@ const MAX_GRAMS = 10000;
 const TOTALS_KEY = "nutri-scanner-totals";
 const MEALS_KEY = "nutri-scanner-meals";
 const HISTORY_KEY = "nutri-scanner-history";
+const TARGETS_KEY = "nutri-scanner-targets";
 const ADDED_FEEDBACK_MS = 800;
 const MAX_MEAL_NAME = 60;
+const MAX_TARGET = 100000;
+
+// The four tracked macros, declared once. Totals, saved meals, log entries,
+// targets and the progress cards all iterate this list, so a metric cannot be
+// credited in one place and forgotten in another.
+//   key      — field name in totals / meals / history / targets
+//   source   — matching field on currentValues()
+const MACROS = [
+  { key: "calories", source: "kcal",          label: "Calories", unit: "kcal", decimals: 0, fallback: 2000 },
+  { key: "protein",  source: "proteins",      label: "Protein",  unit: "g",    decimals: 1, fallback: 150 },
+  { key: "carbs",    source: "carbohydrates", label: "Carbs",    unit: "g",    decimals: 1, fallback: 250 },
+  { key: "fat",      source: "fat",           label: "Fat",      unit: "g",    decimals: 1, fallback: 70 },
+];
+
+const zeroTotals = () => Object.fromEntries(MACROS.map((m) => [m.key, 0]));
 
 const $ = (id) => document.getElementById(id);
 
@@ -46,9 +62,11 @@ const els = {
   btnAddTotal: $("btn-add-total"),
   btnSaveMeal: $("btn-save-meal"),
   btnReset: $("btn-reset"),
-  totalKcal: $("total-kcal"),
-  totalProtein: $("total-protein"),
+  totalsGrid: $("totals-grid"),
   btnResetCounter: $("btn-reset-counter"),
+  btnEditGoals: $("btn-edit-goals"),
+  targetsForm: $("targets-form"),
+  targetsError: $("targets-error"),
   mealsSection: $("meals-section"),
   mealsList: $("meals-list"),
   logList: $("log-list"),
@@ -65,7 +83,8 @@ const VIEWS = ["idle", "scanning", "loading", "results", "error"];
 let grams = null;        // weight committed when the scan started
 let product = null;      // cached OFF product, so weight edits never refetch
 let engineLabel = "starting…";
-let totals = { kcal: 0, protein: 0 };
+let totals = zeroTotals();
+let targets = {};
 let meals = [];
 let history = [];
 let addedTimer = null;
@@ -565,23 +584,89 @@ function writeStored(key, value) {
   }
 }
 
+// A number from storage, or the fallback. Validating rather than trusting:
+// one NaN would poison every later add and never recover without a reset.
+function storedNumber(value, fallback) {
+  return Number.isFinite(value) ? value : fallback;
+}
+
 function loadTotals() {
-  // Validate rather than trust: one NaN in storage would poison every
-  // subsequent add, and the totals would never recover without a reset.
   const parsed = readStored(TOTALS_KEY);
-  return {
-    kcal: Number.isFinite(parsed?.kcal) ? parsed.kcal : 0,
-    protein: Number.isFinite(parsed?.protein) ? parsed.protein : 0,
-  };
+  const loaded = zeroTotals();
+  for (const macro of MACROS) loaded[macro.key] = storedNumber(parsed?.[macro.key], 0);
+
+  // Totals saved before carbs and fat existed used { kcal, protein }. Carry the
+  // calories across rather than silently zeroing a counter mid-day.
+  if (!Number.isFinite(parsed?.calories) && Number.isFinite(parsed?.kcal)) {
+    loaded.calories = parsed.kcal;
+  }
+  return loaded;
 }
 
 function saveTotals() {
   writeStored(TOTALS_KEY, totals);
 }
 
+function loadTargets() {
+  const parsed = readStored(TARGETS_KEY);
+  const loaded = {};
+  // Per-field fallback: one bad value shouldn't discard the other three.
+  for (const macro of MACROS) {
+    const value = parsed?.[macro.key];
+    loaded[macro.key] = Number.isFinite(value) && value > 0 ? value : macro.fallback;
+  }
+  return loaded;
+}
+
+function progressPercent(current, target) {
+  if (!(target > 0)) return 0;
+  return Math.min(100, (current / target) * 100);
+}
+
 function renderTotals() {
-  els.totalKcal.textContent = format(totals.kcal, 0);
-  els.totalProtein.textContent = format(totals.protein, 1);
+  els.totalsGrid.replaceChildren(...MACROS.map((macro) => {
+    const current = totals[macro.key] || 0;
+    const target = targets[macro.key];
+    const percent = progressPercent(current, target);
+
+    const card = document.createElement("div");
+    card.className = "stat";
+
+    const value = document.createElement("div");
+    value.className = "stat-value";
+
+    const amount = document.createElement("span");
+    amount.id = `total-${macro.key}`;
+    amount.textContent = format(current, macro.decimals);
+
+    const against = document.createElement("span");
+    against.className = "stat-unit";
+    against.textContent = ` / ${format(target, macro.decimals)} ${macro.unit}`;
+
+    value.append(amount, against);
+
+    const label = document.createElement("div");
+    label.className = "stat-label";
+    label.textContent = macro.label;
+
+    const track = document.createElement("div");
+    track.className = "meter";
+    track.setAttribute("role", "progressbar");
+    track.setAttribute("aria-label", `${macro.label} progress`);
+    track.setAttribute("aria-valuenow", String(Math.round(percent)));
+    track.setAttribute("aria-valuemin", "0");
+    track.setAttribute("aria-valuemax", "100");
+
+    const fill = document.createElement("div");
+    fill.className = percent >= 100 ? "meter-fill meter-full" : "meter-fill";
+    fill.id = `meter-${macro.key}`;
+    // Capped at 100% so an overshoot can't paint outside the track.
+    fill.style.width = `${percent}%`;
+
+    track.append(fill);
+    card.append(value, label, track);
+    return card;
+  }));
 }
 
 // Reads back exactly what format() put on screen. Rounding the number a second
@@ -598,8 +683,9 @@ function displayed(value, decimals) {
 // item can't be credited without being logged, which is what keeps the log and
 // the totals reconcilable.
 function creditTotals(item) {
-  totals.kcal += item.calories;
-  totals.protein = displayed(totals.protein + item.protein, 1);
+  for (const macro of MACROS) {
+    totals[macro.key] = displayed((totals[macro.key] || 0) + (item[macro.key] || 0), macro.decimals);
+  }
   saveTotals();
 
   history.push({ id: uniqueId(history), ...item, timestamp: Date.now() });
@@ -618,12 +704,7 @@ function addToTotal() {
   // Credit the rounded values the user actually saw, not full precision. Two
   // 50 g scoops of Nutella each display as 270 kcal; totalling 539 would read
   // as a bug even though it's nearer the truth. Worst case: 0.5 kcal/item.
-  creditTotals({
-    name: productLabel(),
-    weight: values.weight,
-    calories: displayed(values.kcal, 0),
-    protein: displayed(values.proteins, 1),
-  });
+  creditTotals(itemFrom(values));
 
   els.btnAddTotal.textContent = "Added! ✓";
   els.btnAddTotal.disabled = true;
@@ -637,7 +718,7 @@ function addToTotal() {
 
 function resetCounter() {
   if (!confirm("Are you sure you want to reset your daily calories and protein counter?")) return;
-  totals = { kcal: 0, protein: 0 };
+  totals = zeroTotals();   // targets are settings, not daily data — left alone
   saveTotals();
   history = [];
   writeStored(HISTORY_KEY, history);
@@ -652,7 +733,8 @@ function resetCounter() {
 // moment the app returned home.
 
 // Saved meals and log entries carry the same nutrition fields, so one shape
-// check serves both.
+// check serves both. Only calories and protein are required: rows written
+// before carbs and fat were tracked are still perfectly usable.
 function hasItemShape(item) {
   return !!item
     && (typeof item.id === "number" || typeof item.id === "string")
@@ -662,10 +744,26 @@ function hasItemShape(item) {
     && Number.isFinite(item.protein);
 }
 
+// Fills in any macro a stored row predates, so nothing downstream ever sees
+// undefined and turns it into NaN.
+function normalizeItem(item) {
+  const filled = { ...item };
+  for (const macro of MACROS) filled[macro.key] = storedNumber(item[macro.key], 0);
+  return filled;
+}
+
+// Builds a meal / log item from whatever the results screen is showing, with
+// every macro routed through displayed() so stored figures match the screen.
+function itemFrom(values) {
+  const item = { name: productLabel(), weight: values.weight };
+  for (const macro of MACROS) item[macro.key] = displayed(values[macro.source], macro.decimals);
+  return item;
+}
+
 function loadMeals() {
   const parsed = readStored(MEALS_KEY);
   // Drop bad rows rather than render NaN or let one of them take the list down.
-  return Array.isArray(parsed) ? parsed.filter(hasItemShape) : [];
+  return Array.isArray(parsed) ? parsed.filter(hasItemShape).map(normalizeItem) : [];
 }
 
 // Delete targets by id, so a collision would remove the wrong row — or both.
@@ -684,14 +782,7 @@ function saveMeal() {
   const values = currentValues();
   if (!values) return;
 
-  meals.push({
-    id: uniqueId(meals),
-    name: productLabel(),
-    weight: values.weight,
-    // Through displayed(), so a quick-add credits exactly what the screen showed.
-    calories: displayed(values.kcal, 0),
-    protein: displayed(values.proteins, 1),
-  });
+  meals.push({ id: uniqueId(meals), ...itemFrom(values) });
   writeStored(MEALS_KEY, meals);
 
   els.btnSaveMeal.textContent = "Saved! ✓";
@@ -702,12 +793,7 @@ function addSavedMeal(id, button) {
   const meal = meals.find((item) => item.id === id);
   if (!meal) return;
 
-  creditTotals({
-    name: meal.name,
-    weight: meal.weight,
-    calories: meal.calories,
-    protein: meal.protein,
-  });
+  creditTotals(meal);   // already normalized, so every macro is present
 
   // The totals sit directly above, so they visibly move; this just confirms the
   // tap landed on the row you meant. renderMeals() restores the label.
@@ -758,6 +844,63 @@ function renderMeals() {
   els.mealsList.replaceChildren(...meals.map(mealRow));
 }
 
+// ───────────────────────── daily targets ──────────────────────
+
+function renderTargetInputs() {
+  for (const macro of MACROS) {
+    $(`target-${macro.key}`).value = String(targets[macro.key]);
+  }
+}
+
+function closeTargetsForm() {
+  els.targetsForm.hidden = true;
+  els.targetsError.hidden = true;
+  els.btnEditGoals.setAttribute("aria-expanded", "false");
+}
+
+function toggleTargetsForm() {
+  if (!els.targetsForm.hidden) {
+    closeTargetsForm();
+    return;
+  }
+  els.targetsForm.hidden = false;
+  els.targetsError.hidden = true;
+  els.btnEditGoals.setAttribute("aria-expanded", "true");
+  renderTargetInputs();              // always opens showing what's actually saved
+  $(`target-${MACROS[0].key}`).focus();
+}
+
+function saveTargets(event) {
+  event.preventDefault();
+
+  const next = {};
+  for (const macro of MACROS) {
+    const raw = $(`target-${macro.key}`).value.trim();
+    const value = raw === "" ? NaN : Number(raw);
+
+    if (!Number.isFinite(value) || value <= 0) {
+      els.targetsError.textContent = `${macro.label} must be a number greater than zero.`;
+      els.targetsError.hidden = false;
+      $(`target-${macro.key}`).focus();
+      return;
+    }
+    if (value > MAX_TARGET) {
+      els.targetsError.textContent = `${macro.label} is over ${MAX_TARGET} — check for a typo.`;
+      els.targetsError.hidden = false;
+      $(`target-${macro.key}`).focus();
+      return;
+    }
+    next[macro.key] = value;
+  }
+
+  // Only commit once every field has passed, so a later failure can't leave
+  // half the goals updated.
+  targets = next;
+  writeStored(TARGETS_KEY, targets);
+  closeTargetsForm();
+  renderTotals();
+}
+
 // ──────────────────────── today's log ─────────────────────────
 // Every credit to the daily totals is written here by creditTotals(), so the
 // log and the counter always describe the same set of items. Deleting an entry
@@ -769,7 +912,7 @@ function isLogEntry(entry) {
 
 function loadHistory() {
   const parsed = readStored(HISTORY_KEY);
-  return Array.isArray(parsed) ? parsed.filter(isLogEntry) : [];
+  return Array.isArray(parsed) ? parsed.filter(isLogEntry).map(normalizeItem) : [];
 }
 
 function deleteHistoryEntry(id) {
@@ -780,8 +923,11 @@ function deleteHistoryEntry(id) {
 
   // Clamped at zero: the totals are a running sum of rounded values, so a
   // sequence of adds and deletes can otherwise leave a stray -0.1 behind.
-  totals.kcal = Math.max(0, totals.kcal - entry.calories);
-  totals.protein = Math.max(0, displayed(totals.protein - entry.protein, 1));
+  // `|| 0` covers entries logged before carbs and fat were tracked.
+  for (const macro of MACROS) {
+    const next = displayed((totals[macro.key] || 0) - (entry[macro.key] || 0), macro.decimals);
+    totals[macro.key] = Math.max(0, next);
+  }
 
   saveTotals();
   writeStored(HISTORY_KEY, history);
@@ -864,6 +1010,7 @@ function reset() {
   els.manualBarcode.value = "";
   els.manualForm.hidden = true;
   els.btnManualToggle.setAttribute("aria-expanded", "false");
+  closeTargetsForm();
   els.headline.replaceChildren();
   els.secondary.replaceChildren();
   setState("idle");
@@ -878,6 +1025,8 @@ els.btnErrorReset.addEventListener("click", reset);
 els.btnAddTotal.addEventListener("click", addToTotal);
 els.btnSaveMeal.addEventListener("click", saveMeal);
 els.btnResetCounter.addEventListener("click", resetCounter);
+els.btnEditGoals.addEventListener("click", toggleTargetsForm);
+els.targetsForm.addEventListener("submit", saveTargets);
 
 els.weight.addEventListener("input", () => { els.weightError.hidden = true; });
 els.weight.addEventListener("keydown", (event) => {
@@ -928,9 +1077,11 @@ if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("sw.js").catch(() => { /* not fatal */ });
 }
 
+targets = loadTargets();
 totals = loadTotals();
 meals = loadMeals();
 history = loadHistory();
+closeTargetsForm();   // the markup ships it hidden; own that state in code too
 renderTotals();
 setState("idle");   // also renders the saved meals and today's log
 setDiagnostics();

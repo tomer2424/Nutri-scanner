@@ -23,17 +23,42 @@
   <!-- ───────────── IDLE ───────────── -->
   <section id="view-idle" class="view">
     <div class="totals">
-      <div class="headline">
-        <div class="stat">
-          <div class="stat-value"><span id="total-kcal">0</span><span class="stat-unit"> kcal</span></div>
-          <div class="stat-label">Total calories</div>
-        </div>
-        <div class="stat">
-          <div class="stat-value"><span id="total-protein">0</span><span class="stat-unit"> g</span></div>
-          <div class="stat-label">Total protein</div>
-        </div>
+      <!-- Cards are built in app.js from the MACROS list, so the four metrics
+           can never drift out of sync with the markup. -->
+      <div id="totals-grid" class="headline"></div>
+
+      <div class="totals-actions">
+        <button id="btn-edit-goals" class="btn btn-link" type="button"
+                aria-expanded="false" aria-controls="targets-form">Edit Goals</button>
+        <button id="btn-reset-counter" class="btn btn-link" type="button">Reset Counter</button>
       </div>
-      <button id="btn-reset-counter" class="btn btn-link" type="button">Reset Counter</button>
+
+      <!-- novalidate: the app does its own validation with specific inline
+           messages. Without it the browser's native constraint check fires
+           first for min violations, suppressing our message entirely and
+           making behaviour vary by browser and locale. -->
+      <form id="targets-form" class="targets-form" novalidate hidden>
+        <div class="targets-grid">
+          <label class="target-field">
+            <span>Calories (kcal)</span>
+            <input id="target-calories" class="text-input" type="number" inputmode="decimal" min="1" step="any">
+          </label>
+          <label class="target-field">
+            <span>Protein (g)</span>
+            <input id="target-protein" class="text-input" type="number" inputmode="decimal" min="1" step="any">
+          </label>
+          <label class="target-field">
+            <span>Carbs (g)</span>
+            <input id="target-carbs" class="text-input" type="number" inputmode="decimal" min="1" step="any">
+          </label>
+          <label class="target-field">
+            <span>Fat (g)</span>
+            <input id="target-fat" class="text-input" type="number" inputmode="decimal" min="1" step="any">
+          </label>
+        </div>
+        <p id="targets-error" class="error-text" role="alert" hidden></p>
+        <button class="btn btn-secondary" type="submit">Save Goals</button>
+      </form>
     </div>
 
     <div class="log">

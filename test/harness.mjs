@@ -13,9 +13,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const APP_PATH = fileURLToPath(new URL("../app.js", import.meta.url));
 const VIEWS = ["idle", "scanning", "loading", "results", "error"];
 
-function makeElement(id) {
-  return {
-    id,
+// `register` mirrors a real DOM closely enough for our purposes: an element
+// becomes findable by getElementById as soon as it is given an id, including
+// one created by document.createElement and assigned an id afterwards — which
+// is how the four counter cards are built.
+function makeElement(id, register) {
+  let currentId = id;
+  const node = {
     hidden: false,
     disabled: false,
     value: "",
@@ -27,6 +31,7 @@ function makeElement(id) {
     height: 0,
     children: [],
     attrs: {},
+    style: {},
     listeners: {},
     addEventListener(type, fn) { this.listeners[type] = fn; },
     setAttribute(key, value) { this.attrs[key] = value; },
@@ -37,6 +42,15 @@ function makeElement(id) {
     play() { return Promise.resolve(); },
     getContext() { return { drawImage() {} }; },
   };
+
+  Object.defineProperty(node, "id", {
+    get: () => currentId,
+    set: (value) => { currentId = value; register?.(value, node); },
+    enumerable: true,
+  });
+
+  if (id) register?.(id, node);
+  return node;
 }
 
 /** Flattens an element tree to the text a browser would show. */
@@ -46,15 +60,16 @@ export function textOf(node) {
 
 export function install() {
   const elements = new Map();
+  const register = (id, node) => elements.set(id, node);
   const el = (id) => {
-    if (!elements.has(id)) elements.set(id, makeElement(id));
+    if (!elements.has(id)) elements.set(id, makeElement(id, register));
     return elements.get(id);
   };
 
   globalThis.document = {
     hidden: false,
     getElementById: el,
-    createElement: () => makeElement(undefined),
+    createElement: () => makeElement(undefined, register),
     addEventListener() {},
   };
 
@@ -88,8 +103,14 @@ export function install() {
     loadApp,
     /** Which view sections are currently shown. */
     visible: () => VIEWS.filter((v) => !el(`view-${v}`).hidden),
-    /** The daily counter as "<kcal> / <protein>". */
-    totals: () => `${el("total-kcal").textContent} / ${el("total-protein").textContent}`,
+    /** Calories and protein, as "<calories> / <protein>". */
+    totals: () => `${el("total-calories").textContent} / ${el("total-protein").textContent}`,
+    /** All four macros, as "<calories> / <protein> / <carbs> / <fat>". */
+    macros: () => ["calories", "protein", "carbs", "fat"].map((k) => el(`total-${k}`).textContent).join(" / "),
+    /** Each counter card flattened to text, e.g. "270 / 2000 kcalCalories". */
+    cards: () => el("totals-grid").children.map(textOf),
+    /** The rendered width of one progress bar, e.g. "13.5%". */
+    meter: (key) => el(`meter-${key}`).style.width,
     /** The four headline stat cards, flattened to text. */
     headline: () => el("headline").children.map(textOf),
     /** The four secondary rows, flattened to text. */

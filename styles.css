@@ -137,7 +137,49 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
-.totals .btn-link { align-self: center; }
+.totals-actions { display: flex; justify-content: center; gap: 18px; }
+
+/* Four cards at this size need tighter numbers than the per-item results. */
+.totals .stat-value { font-size: 1.3rem; }
+.totals .stat-unit { font-size: 0.8rem; }
+
+.meter {
+  height: 4px;
+  margin-top: 8px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.meter-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.25s ease;
+}
+
+/* Goal met or passed — the bar is capped at 100%, so this is the only cue. */
+.meter-full { background: var(--accent); opacity: 1; box-shadow: 0 0 0 1px var(--accent); }
+
+@media (prefers-reduced-motion: reduce) {
+  .meter-fill { transition: none; }
+}
+
+.targets-form { display: flex; flex-direction: column; gap: 12px; }
+
+.targets-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+.target-field { display: flex; flex-direction: column; gap: 4px; }
+
+.target-field span {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+}
 
 /* ── today's log ── */
 

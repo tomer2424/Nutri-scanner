@@ -18,8 +18,8 @@ python -m http.server 8000
 ## Tests
 
 ```bash
-node test/run.mjs             # 90 checks, including the live API contract
-node test/run.mjs --offline   # 86 checks, no network needed
+node test/run.mjs             # 126 checks, including the live API contract
+node test/run.mjs --offline   # 122 checks, no network needed
 ```
 
 No dependencies and no test framework — just Node. `app.js` exports nothing and touches the DOM at load, so [test/harness.mjs](test/harness.mjs) stubs the handful of browser APIs it uses, imports **the real file**, fires the listeners it registered, and reads back what it rendered. Nothing in the suite reimplements the app's logic, so a check passing means the shipped code works.
@@ -83,9 +83,19 @@ The line at the bottom of the screen shows which engine is live:
 
 The wasm decoder is fetched from jsDelivr on first load (~1 MB) and warmed up before the camera opens.
 
-## Daily counter
+## Daily counter and goals
 
-The home screen shows running totals for calories and protein. On a results screen, **Add to Daily Total** adds the current item and returns you home with the totals updated. Totals are kept in `localStorage`, so they survive refreshes and relaunching the installed app.
+The home screen shows running totals for **calories, protein, carbs and fat**, each against a daily target, with a progress bar underneath. **Edit Goals** opens an inline form to set your own targets; they're stored in `nutri-scanner-targets` and default to 2000 kcal / 150 g / 250 g / 70 g. Targets are settings, not daily data, so Reset Counter leaves them alone.
+
+Bars cap at 100% so an overshoot can't paint outside the track — the card still shows the real number (`30.9 / 30 g`), and a filled bar is outlined to mark the goal as met.
+
+The four metrics are declared once in a `MACROS` list in [app.js](app.js), and totals, saved meals, log entries, targets and the cards all iterate it. That's deliberate: with four metrics hand-written in five places, crediting one and forgetting another is the obvious bug, and this makes it unexpressible.
+
+On a results screen, **Add to Daily Total** adds the current item and returns you home with the totals updated. Totals are kept in `localStorage`, so they survive refreshes and relaunching the installed app.
+
+**Legacy data is read, not discarded.** Totals saved before carbs and fat existed used `{ kcal, protein }`; those calories are carried across rather than silently zeroing a counter mid-day, and saved meals or log entries missing carbs/fat read as 0 instead of `NaN`.
+
+The goals form carries `novalidate` on purpose. The app does its own validation with specific inline messages; without it the browser's native constraint check fires first on `min` violations and suppresses ours, which also made the browser and the test suite exercise different paths.
 
 **There is no midnight rollover.** Totals run until you press **Reset Counter** (which asks for confirmation first), however many days that spans — so "daily" is your discipline, not the app's. This is deliberate, not an oversight.
 

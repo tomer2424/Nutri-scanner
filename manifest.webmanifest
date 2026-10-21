@@ -1,0 +1,16 @@
+{
+  "name": "Nutri Scanner",
+  "short_name": "Nutri",
+  "description": "Scan a food barcode and get nutrition values for the weight you enter.",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f6f7f5",
+  "theme_color": "#15803d",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

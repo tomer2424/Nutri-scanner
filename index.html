@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Nutri Scanner</title>
+<meta name="description" content="Scan a food barcode and get nutrition values for the weight you enter.">
+<meta name="theme-color" content="#15803d">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Nutri Scanner">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" href="icon-192.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<main class="app">
+
+  <h1 class="title">Nutri Scanner</h1>
+
+  <!-- ───────────── IDLE ───────────── -->
+  <section id="view-idle" class="view">
+    <label class="field-label" for="weight">Weight in grams</label>
+    <input id="weight" class="weight-input" type="number" inputmode="decimal"
+           min="0" max="10000" step="any" placeholder="e.g. 50" enterkeyhint="go">
+    <p id="weight-error" class="error-text" role="alert" hidden></p>
+
+    <button id="btn-scan" class="btn btn-primary" type="button">Scan barcode</button>
+
+    <button id="btn-manual-toggle" class="btn btn-link" type="button"
+            aria-expanded="false" aria-controls="manual-form">Enter barcode manually</button>
+
+    <form id="manual-form" class="manual-form" hidden>
+      <input id="manual-barcode" class="text-input" type="text" inputmode="numeric"
+             pattern="[0-9]*" autocomplete="off" placeholder="Barcode digits" enterkeyhint="go">
+      <button class="btn btn-secondary" type="submit">Look up</button>
+    </form>
+  </section>
+
+  <!-- ─────────── SCANNING ─────────── -->
+  <section id="view-scanning" class="view" hidden>
+    <div class="viewfinder">
+      <video id="video" playsinline muted autoplay></video>
+      <div class="reticle" aria-hidden="true"></div>
+    </div>
+    <p class="hint">Fill the box with the barcode. Hold steady.</p>
+    <button id="btn-cancel-scan" class="btn btn-secondary" type="button">Cancel</button>
+  </section>
+
+  <!-- ─────────── LOADING ──────────── -->
+  <section id="view-loading" class="view" hidden>
+    <div class="spinner" aria-hidden="true"></div>
+    <p id="loading-text" class="hint" role="status">Looking up product…</p>
+  </section>
+
+  <!-- ─────────── RESULTS ──────────── -->
+  <section id="view-results" class="view" hidden>
+    <div class="product">
+      <img id="product-image" class="product-image" alt="" hidden>
+      <div class="product-meta">
+        <h2 id="product-name" class="product-name"></h2>
+        <p id="product-brand" class="product-brand"></p>
+        <p id="product-barcode" class="product-barcode"></p>
+      </div>
+    </div>
+
+    <label class="field-label" for="weight-results">Weight in grams</label>
+    <input id="weight-results" class="weight-input" type="number" inputmode="decimal"
+           min="0" max="10000" step="any">
+
+    <div id="headline" class="headline"></div>
+    <dl id="secondary" class="secondary"></dl>
+    <p id="result-note" class="note" hidden></p>
+
+    <button id="btn-reset" class="btn btn-primary" type="button">Scan Another Product</button>
+  </section>
+
+  <!-- ──────────── ERROR ───────────── -->
+  <section id="view-error" class="view" hidden>
+    <div class="error-box">
+      <p id="error-message" role="alert"></p>
+      <p id="error-detail" class="error-detail" hidden></p>
+    </div>
+    <button id="btn-error-reset" class="btn btn-primary" type="button">Scan Another Product</button>
+  </section>
+
+  <p id="diagnostics" class="diagnostics">engine: starting…</p>
+
+</main>
+
+<canvas id="crop" hidden></canvas>
+<script type="module" src="app.js"></script>
+</body>
+</html>

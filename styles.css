@@ -1,0 +1,258 @@
+:root {
+  --bg: #f6f7f5;
+  --surface: #ffffff;
+  --text: #15201a;
+  --muted: #68756d;
+  --border: #dde2dd;
+  --accent: #15803d;
+  --accent-text: #ffffff;
+  --danger: #b91c1c;
+  --danger-bg: #fef2f2;
+  --radius: 14px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #11140f;
+    --surface: #1b1f1a;
+    --text: #e9ece8;
+    --muted: #9aa69d;
+    --border: #2e342c;
+    --accent: #22c55e;
+    --accent-text: #08130c;
+    --danger: #fca5a5;
+    --danger-bg: #2a1616;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+body {
+  font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.app {
+  max-width: 520px;
+  margin: 0 auto;
+  padding: calc(env(safe-area-inset-top) + 20px)
+           calc(env(safe-area-inset-right) + 18px)
+           calc(env(safe-area-inset-bottom) + 24px)
+           calc(env(safe-area-inset-left) + 18px);
+}
+
+.title {
+  margin: 0 0 22px;
+  font-size: 1.3rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.view { display: flex; flex-direction: column; gap: 14px; }
+[hidden] { display: none !important; }
+
+/* ── form controls ── */
+
+.field-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--muted);
+  margin-bottom: -6px;
+}
+
+.weight-input, .text-input {
+  width: 100%;
+  padding: 14px 16px;
+  font-size: 16px; /* 16px minimum stops iOS Safari auto-zooming on focus */
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  appearance: none;
+}
+
+.weight-input { font-size: 20px; font-weight: 600; }
+
+.weight-input:focus, .text-input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+
+.btn {
+  min-height: 52px;
+  padding: 14px 18px;
+  font-size: 1rem;
+  font-family: inherit;
+  font-weight: 600;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.btn-primary { background: var(--accent); color: var(--accent-text); }
+.btn-secondary { background: var(--surface); color: var(--text); border-color: var(--border); }
+
+.btn-link {
+  min-height: 0;
+  padding: 4px;
+  background: none;
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 0.9rem;
+  text-decoration: underline;
+}
+
+.btn:active { opacity: 0.75; }
+
+.manual-form { display: flex; flex-direction: column; gap: 10px; }
+
+.error-text {
+  margin: 0;
+  color: var(--danger);
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.hint { margin: 0; color: var(--muted); font-size: 0.9rem; text-align: center; }
+
+/* ── viewfinder ── */
+
+.viewfinder {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  overflow: hidden;
+  background: #000;
+  border-radius: var(--radius);
+}
+
+.viewfinder video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* Mirrors the 40%-height centre band that app.js actually crops and decodes,
+   so filling this box is the same as filling the decoder's input. */
+.reticle {
+  position: absolute;
+  left: 4%;
+  right: 4%;
+  top: 30%;
+  height: 40%;
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  border-radius: 10px;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.35);
+}
+
+.spinner {
+  width: 34px;
+  height: 34px;
+  margin: 28px auto 4px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation-duration: 2.4s; }
+}
+
+/* ── product header ── */
+
+.product { display: flex; gap: 12px; align-items: center; }
+
+.product-image {
+  width: 62px;
+  height: 62px;
+  object-fit: contain;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  flex-shrink: 0;
+}
+
+.product-meta { min-width: 0; }
+.product-name { margin: 0; font-size: 1.05rem; font-weight: 650; }
+.product-brand, .product-barcode { margin: 2px 0 0; font-size: 0.85rem; color: var(--muted); }
+.product-barcode { font-variant-numeric: tabular-nums; }
+
+/* ── results ── */
+
+.headline {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+.stat {
+  padding: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.stat-value {
+  font-size: 1.65rem;
+  font-weight: 680;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+.stat-unit { font-size: 0.95rem; font-weight: 550; color: var(--muted); }
+.stat-label { font-size: 0.8rem; color: var(--muted); margin-top: 2px; }
+
+.secondary {
+  margin: 0;
+  padding: 4px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.secondary-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.92rem;
+}
+
+.secondary-row:last-child { border-bottom: 0; }
+.secondary-row dt { color: var(--muted); }
+.secondary-row dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.note { margin: 0; font-size: 0.85rem; color: var(--muted); }
+
+.error-box {
+  padding: 16px;
+  background: var(--danger-bg);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius);
+}
+
+.error-box p { margin: 0; color: var(--danger); font-weight: 600; }
+.error-detail { margin-top: 8px !important; font-weight: 400 !important; font-size: 0.88rem; }
+
+.diagnostics {
+  margin: 26px 0 0;
+  font-size: 0.72rem;
+  color: var(--muted);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}

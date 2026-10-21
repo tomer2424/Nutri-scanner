@@ -53,6 +53,14 @@ Three jobs:
 
 The gate is the **offline** suite on purpose. It's fixture-backed and deterministic, so a red build always means our code broke — never that Open Food Facts had a blip. The live contract check still runs on every push, but as a non-blocking job, because a third party's uptime shouldn't be able to veto a deploy. If `contract` goes red while `test` stays green, the API changed shape and the fixture needs re-recording.
 
+### Asset versioning (don't remove this)
+
+`index.html` references `app.js?v=dev` and `styles.css?v=dev`; CI rewrites `?v=dev` to the commit SHA when publishing, and fails the build if the rewrite doesn't land.
+
+This is load-bearing. GitHub Pages serves every file with `Cache-Control: max-age=600` and caches each one independently, so without it a deploy can leave a browser holding a **fresh `index.html` and a ten-minute-old `app.js`** — new markup renders, the code wiring it up is missing, and nothing logs an error. New buttons just silently do nothing. Versioning means fresh HTML always requests a URL no cache has seen, while stale HTML keeps requesting the matching stale JS. Consistent either way; mixed state was the bug.
+
+**A service worker cannot do this job** — worth recording, because it's the obvious first attempt. Instrumenting the worker showed it *does* receive the `script /app.js` fetch event on a cold load, and its `cache: "reload"` fetch never fails. But on a later load Chrome serves cached scripts and stylesheets **without dispatching a fetch event at all**; the navigation, manifest and icons still reach the worker, scripts don't. [sw.js](sw.js) now force-revalidates the same-origin requests it does see, which keeps `index.html` itself fresh so a new version stamp takes effect on the next load — but the stamp is what fixes it.
+
 **`test/` is not published.** The deploy stages an allowlist by extension (`*.html *.js *.css *.webmanifest *.png`, top-level only), so test files and `.github/` are excluded by construction rather than by an exclude list that drifts. An unmatched glob or a missing `index.html` fails the step loudly. The consequence: if you add an asset in a *subdirectory*, add it to the staging step or it won't ship.
 
 ## How the scanner picks an engine

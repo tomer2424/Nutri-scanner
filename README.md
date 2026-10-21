@@ -39,9 +39,21 @@ If you see *"Camera needs a secure (HTTPS) connection"*, this is why.
 
 ## Deploying
 
-Pushing to `main` triggers `.github/workflows/deploy.yml`, which publishes the repo root to GitHub Pages.
+Pushing to `main` triggers [.github/workflows/deploy.yml](.github/workflows/deploy.yml), which runs the tests and then publishes to GitHub Pages.
 
 **One-time setup:** repo **Settings → Pages → Source → GitHub Actions**. The first workflow run fails without it.
+
+Three jobs:
+
+| Job | Gates the deploy? | What it runs |
+| --- | --- | --- |
+| `test` | **yes** | `node test/run.mjs --offline` |
+| `contract` | no | `node test/run.mjs` (live API) |
+| `deploy` | — | stages the site and publishes it |
+
+The gate is the **offline** suite on purpose. It's fixture-backed and deterministic, so a red build always means our code broke — never that Open Food Facts had a blip. The live contract check still runs on every push, but as a non-blocking job, because a third party's uptime shouldn't be able to veto a deploy. If `contract` goes red while `test` stays green, the API changed shape and the fixture needs re-recording.
+
+**`test/` is not published.** The deploy stages an allowlist by extension (`*.html *.js *.css *.webmanifest *.png`, top-level only), so test files and `.github/` are excluded by construction rather than by an exclude list that drifts. An unmatched glob or a missing `index.html` fails the step loudly. The consequence: if you add an asset in a *subdirectory*, add it to the staging step or it won't ship.
 
 ## How the scanner picks an engine
 

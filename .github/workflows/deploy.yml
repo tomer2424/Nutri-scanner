@@ -16,7 +16,36 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Gates the deploy. Deliberately the --offline suite: it is fixture-backed and
+  # fully deterministic, so a failure here always means *our* code broke. The
+  # live API is checked in the `contract` job instead — a third party's uptime
+  # must not be able to veto a deploy.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run tests
+        run: node test/run.mjs --offline
+
+  # Informational, and deliberately not a gate. Catches Open Food Facts changing
+  # its API shape out from under us — the one failure that is otherwise silent,
+  # since our code would keep working and simply stop finding data.
+  contract:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check the live Open Food Facts contract
+        run: node test/run.mjs
+
   deploy:
+    needs: test
     runs-on: ubuntu-latest
     environment:
       name: github-pages
@@ -24,12 +53,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # No build step — the repo root is the site exactly as written.
+      # Allowlist by extension rather than a list of things to exclude. Every
+      # file the site serves is a top-level file of one of these types, so
+      # test/ and .github/ are left out by construction — a new test directory
+      # can never leak into the published site by someone forgetting to add it
+      # to an exclude list. An unmatched glob fails the step loudly.
+      - name: Stage the site
+        run: |
+          mkdir -p _site
+          cp *.html *.js *.css *.webmanifest *.png _site/
+          test -f _site/index.html
+          test -f _site/app.js
+          test ! -e _site/test
+          echo "Publishing:" && ls -1 _site
+
       - uses: actions/configure-pages@v5
 
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: .
+          path: _site
 
       - id: deployment
         uses: actions/deploy-pages@v4

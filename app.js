@@ -14,6 +14,7 @@ const SCAN_INTERVAL_MS = 100;
 const BAND_FRACTION = 0.4;   // centre slice of the frame we actually decode
 const FETCH_TIMEOUT_MS = 10000;
 const MAX_GRAMS = 10000;
+const DEFAULT_GRAMS = "100";   // the label basis, so the first numbers match the pack
 // Namespaced because every GitHub Pages project under the same account shares
 // one origin, and therefore one localStorage. A bare "savedMeals" would be a
 // live collision risk with any other app published there.
@@ -42,12 +43,11 @@ const zeroTotals = () => Object.fromEntries(MACROS.map((m) => [m.key, 0]));
 const $ = (id) => document.getElementById(id);
 
 const els = {
-  weight: $("weight"),
-  weightError: $("weight-error"),
   btnScan: $("btn-scan"),
   btnManualToggle: $("btn-manual-toggle"),
   manualForm: $("manual-form"),
   manualBarcode: $("manual-barcode"),
+  manualError: $("manual-error"),
   video: $("video"),
   btnCancelScan: $("btn-cancel-scan"),
   loadingText: $("loading-text"),
@@ -56,6 +56,7 @@ const els = {
   productBrand: $("product-brand"),
   productBarcode: $("product-barcode"),
   weightResults: $("weight-results"),
+  weightError: $("weight-error"),
   headline: $("headline"),
   secondary: $("secondary"),
   resultNote: $("result-note"),
@@ -86,7 +87,6 @@ const els = {
 
 const VIEWS = ["idle", "scanning", "loading", "results", "error"];
 
-let grams = null;        // weight committed when the scan started
 let product = null;      // cached OFF product, so weight edits never refetch
 let engineLabel = "starting…";
 let totals = zeroTotals();
@@ -472,7 +472,7 @@ function renderResults(scannedCode) {
     els.productImage.removeAttribute("src");
   }
 
-  els.weightResults.value = String(grams);
+  els.weightResults.value = DEFAULT_GRAMS;
   renderNutrition();
 
   const notes = [];
@@ -488,12 +488,25 @@ function renderResults(scannedCode) {
   setState("results");
 }
 
+function readWeight() {
+  const raw = els.weightResults.value.trim();
+  if (raw === "") return { error: "Enter a weight in grams." };
+
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return { error: "That isn't a number — enter a weight in grams." };
+  if (value <= 0) return { error: "Enter a weight greater than zero." };
+  if (value > MAX_GRAMS) return { error: `That's over ${MAX_GRAMS} g — check for a typo.` };
+
+  return { value };
+}
+
 // Every scaled number the results screen shows comes from here, and so does
 // every number "Add to Daily Total" adds. One source of truth, so the total can
-// never drift from what was on screen.
+// never drift from what was on screen. Null for an invalid weight, which is
+// what blocks Add and Save — not just their disabled state.
 function currentValues() {
-  const weight = toNumber(els.weightResults.value);
-  if (!product || weight === null || weight <= 0) return null;
+  const { value: weight } = readWeight();
+  if (!product || weight === undefined) return null;
 
   const n = product.nutriments || {};
   return {
@@ -509,18 +522,30 @@ function currentValues() {
   };
 }
 
+// The grams field's input handler, and the first render of every result.
 // Recalculates from the cached product — never refetches.
 function renderNutrition() {
-  const values = currentValues();
-  if (!values) return;
+  const { error } = readWeight();
+  els.weightError.textContent = error || "";
+  els.weightError.hidden = !error;
 
-  const unit = basisUnit(product);
+  // While "Added! ✓" shows, the add has happened and the screen is on its way
+  // home; re-enabling here would let a keystroke unlock a second add.
+  if (!addedTimer) els.btnAddTotal.disabled = !!error;
+  // A new weight is a new portion, so "Saved! ✓" no longer describes it.
+  els.btnSaveMeal.textContent = "Save as Quick Add";
+  els.btnSaveMeal.disabled = !!error;
+
+  // An invalid weight blanks every figure to "—" rather than leaving the last
+  // valid set on screen beside the error.
+  const values = currentValues();
+  const pick = (key) => (values ? values[key] : null);
 
   const headline = [
-    { label: "Calories", value: values.kcal, unit: "kcal", decimals: 0 },
-    { label: "Protein", value: values.proteins, unit: "g", decimals: 1 },
-    { label: "Carbs", value: values.carbohydrates, unit: "g", decimals: 1 },
-    { label: "Fat", value: values.fat, unit: "g", decimals: 1 },
+    { label: "Calories", value: pick("kcal"), unit: "kcal", decimals: 0 },
+    { label: "Protein", value: pick("proteins"), unit: "g", decimals: 1 },
+    { label: "Carbs", value: pick("carbohydrates"), unit: "g", decimals: 1 },
+    { label: "Fat", value: pick("fat"), unit: "g", decimals: 1 },
   ];
 
   els.headline.replaceChildren(...headline.map((stat) => {
@@ -545,10 +570,10 @@ function renderNutrition() {
   }));
 
   const secondary = [
-    { label: "Sugars", value: values.sugars, decimals: 1 },
-    { label: "Saturated fat", value: values.saturatedFat, decimals: 1 },
-    { label: "Fiber", value: values.fiber, decimals: 1 },
-    { label: "Salt", value: values.salt, decimals: 2 },
+    { label: "Sugars", value: pick("sugars"), decimals: 1 },
+    { label: "Saturated fat", value: pick("saturatedFat"), decimals: 1 },
+    { label: "Fiber", value: pick("fiber"), decimals: 1 },
+    { label: "Salt", value: pick("salt"), decimals: 2 },
   ];
 
   els.secondary.replaceChildren(...secondary.map((row) => {
@@ -566,7 +591,9 @@ function renderNutrition() {
     return wrapper;
   }));
 
-  setDiagnostics(`${format(values.weight, 1)} ${unit} of ${product.product_name || "product"}`);
+  setDiagnostics(values
+    ? `${format(values.weight, 1)} ${basisUnit(product)} of ${product.product_name || "product"}`
+    : "");
 }
 
 // ────────────────────── daily counter ─────────────────────────
@@ -1062,32 +1089,6 @@ function renderHistory() {
 
 // ───────────────────────── interactions ───────────────────────
 
-function readWeight() {
-  const raw = els.weight.value.trim();
-  if (raw === "") return { error: "Enter a weight in grams first." };
-
-  const value = Number(raw);
-  if (!Number.isFinite(value)) return { error: "That isn't a number — enter a weight in grams." };
-  if (value <= 0) return { error: "Enter a weight greater than zero." };
-  if (value > MAX_GRAMS) return { error: `That's over ${MAX_GRAMS} g — check for a typo.` };
-
-  return { value };
-}
-
-function beginScan() {
-  const { value, error } = readWeight();
-  if (error) {
-    els.weightError.textContent = error;
-    els.weightError.hidden = false;
-    els.weight.focus();
-    return;
-  }
-
-  els.weightError.hidden = true;
-  grams = value;
-  startCamera();
-}
-
 function reset() {
   stopCamera();
 
@@ -1101,11 +1102,10 @@ function reset() {
   els.btnSaveMeal.disabled = false;
 
   product = null;
-  grams = null;
-  els.weight.value = "";
   els.weightResults.value = "";
   els.weightError.hidden = true;
   els.manualBarcode.value = "";
+  els.manualError.hidden = true;
   els.manualForm.hidden = true;
   els.btnManualToggle.setAttribute("aria-expanded", "false");
   closeTargetsForm();
@@ -1115,10 +1115,9 @@ function reset() {
   els.secondary.replaceChildren();
   setState("idle");
   setDiagnostics();
-  els.weight.focus();
 }
 
-els.btnScan.addEventListener("click", beginScan);
+els.btnScan.addEventListener("click", startCamera);
 els.btnCancelScan.addEventListener("click", reset);
 els.btnReset.addEventListener("click", reset);
 els.btnErrorReset.addEventListener("click", reset);
@@ -1129,11 +1128,6 @@ els.btnEditGoals.addEventListener("click", toggleTargetsForm);
 els.targetsForm.addEventListener("submit", saveTargets);
 els.btnCustomToggle.addEventListener("click", toggleCustomForm);
 els.customForm.addEventListener("submit", submitCustom);
-
-els.weight.addEventListener("input", () => { els.weightError.hidden = true; });
-els.weight.addEventListener("keydown", (event) => {
-  if (event.key === "Enter") { event.preventDefault(); beginScan(); }
-});
 
 els.weightResults.addEventListener("input", renderNutrition);
 
@@ -1147,23 +1141,15 @@ els.btnManualToggle.addEventListener("click", () => {
 els.manualForm.addEventListener("submit", (event) => {
   event.preventDefault();
 
-  const { value, error } = readWeight();
-  if (error) {
-    els.weightError.textContent = error;
-    els.weightError.hidden = false;
-    els.weight.focus();
-    return;
-  }
-
   const code = els.manualBarcode.value.replace(/\D/g, "");
   if (code.length < 8) {
-    els.weightError.textContent = "Enter at least 8 barcode digits.";
-    els.weightError.hidden = false;
+    els.manualError.textContent = "Enter at least 8 barcode digits.";
+    els.manualError.hidden = false;
+    els.manualBarcode.focus();
     return;
   }
 
-  els.weightError.hidden = true;
-  grams = value;
+  els.manualError.hidden = true;
   lookUp(code);
 });
 

@@ -115,14 +115,49 @@ export function install() {
     headline: () => el("headline").children.map(textOf),
     /** The four secondary rows, flattened to text. */
     secondary: () => el("secondary").children.map(textOf),
-    /** Drives a manual-entry lookup, then waits for it to settle. */
+    /**
+     * Drives a manual-entry lookup and waits for it to settle, then — the way
+     * a user would, once the product is on screen — types `grams` into the
+     * results field. Omit `grams` to keep the default.
+     */
     async lookup(barcode, grams, settleMs = 1500) {
-      el("weight").value = String(grams);
       el("manual-barcode").value = String(barcode);
       el("manual-form").listeners.submit({ preventDefault() {} });
       await wait(settleMs);
+      if (grams !== undefined && !el("view-results").hidden) {
+        el("weight-results").value = String(grams);
+        el("weight-results").listeners.input();
+      }
     },
     click: (id) => el(id).listeners.click(),
+    /**
+     * Fakes a working camera and a native BarcodeDetector that sees nothing
+     * until showBarcode() is called. Install before loadApp(): the detector is
+     * built and warmed up as the module loads.
+     */
+    stubCamera() {
+      let inView = null;
+      globalThis.BarcodeDetector = class {
+        static async getSupportedFormats() { return ["ean_13"]; }
+        async detect() {
+          const rawValue = inView;
+          inView = null;
+          return rawValue ? [{ rawValue }] : [];
+        }
+      };
+      // Node's own navigator is a getter-only global, so redefine rather than assign.
+      Object.defineProperty(globalThis, "navigator", {
+        configurable: true,
+        value: {
+          mediaDevices: {
+            getUserMedia: async () => ({ getTracks: () => [{ stop() {} }] }),
+          },
+        },
+      });
+      el("video").videoWidth = 1280;
+      el("video").videoHeight = 720;
+      return { showBarcode(code) { inView = code; } };
+    },
   };
 }
 

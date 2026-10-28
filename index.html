@@ -67,11 +67,6 @@
       <div id="log-list" class="log-list"></div>
     </div>
 
-    <label class="field-label" for="weight">Weight in grams</label>
-    <input id="weight" class="weight-input" type="number" inputmode="decimal"
-           min="0" max="10000" step="any" placeholder="e.g. 50" enterkeyhint="go">
-    <p id="weight-error" class="error-text" role="alert" hidden></p>
-
     <button id="btn-scan" class="btn btn-primary" type="button">Scan barcode</button>
 
     <button id="btn-manual-toggle" class="btn btn-link" type="button"
@@ -80,6 +75,7 @@
     <form id="manual-form" class="manual-form" hidden>
       <input id="manual-barcode" class="text-input" type="text" inputmode="numeric"
              pattern="[0-9]*" autocomplete="off" placeholder="Barcode digits" enterkeyhint="go">
+      <p id="manual-error" class="error-text" role="alert" hidden></p>
       <button class="btn btn-secondary" type="submit">Look up</button>
     </form>
 
@@ -155,8 +151,11 @@
     </div>
 
     <label class="field-label" for="weight-results">Weight in grams</label>
+    <!-- No novalidate needed: this isn't in a form, so the browser never runs a
+         constraint check. app.js validates on every keystroke instead. -->
     <input id="weight-results" class="weight-input" type="number" inputmode="decimal"
-           min="0" max="10000" step="any">
+           min="0" max="10000" step="any" enterkeyhint="done">
+    <p id="weight-error" class="error-text" role="alert" hidden></p>
 
     <div id="headline" class="headline"></div>
     <dl id="secondary" class="secondary"></dl>

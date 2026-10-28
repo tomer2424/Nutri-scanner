@@ -26,24 +26,135 @@ const serveFixtures = () =>
 const app = install();
 serveFixtures();
 routes.set(NUTELLA_BARCODE, NUTELLA);
+// Before the first load: the detector is built as the module loads.
+const camera = app.stubCamera();
 await app.loadApp();
 
-// ─────────────────────────── input handling ───────────────────────────
+const setGrams = (value) => {
+  app.el("weight-results").value = value;
+  app.el("weight-results").listeners.input();
+};
+const stored = (key) => JSON.parse(app.store.get(key) || "null");
 
-section("input validation");
+// ─────────────────────────── scan-first flow ──────────────────────────
+// idle → scanning → loading → results → (enter grams) → credited, through the
+// real camera path rather than manual entry.
 
-for (const [input, shouldReject] of [
-  ["", true], ["0", true], ["-5", true], ["abc", true], ["99999", true], ["50", false],
-]) {
-  app.el("weight").value = input;
-  app.el("manual-barcode").value = NUTELLA_BARCODE;
-  app.el("weight-error").hidden = true;
-  app.el("manual-form").listeners.submit({ preventDefault() {} });
-  const rejected = !app.el("weight-error").hidden;
-  check(`weight ${JSON.stringify(input)} rejected = ${shouldReject}`,
-        rejected === shouldReject, app.el("weight-error").textContent);
+section("scan-first flow");
+
+check("starts on the home screen", app.visible().join() === "idle", app.visible().join());
+
+// Hold the lookup open so the loading state can be observed, not just inferred.
+let releaseFetch;
+const fetchGate = new Promise((resolve) => { releaseFetch = resolve; });
+const ungated = globalThis.fetch;
+globalThis.fetch = async (...args) => { await fetchGate; return ungated(...args); };
+
+app.click("btn-scan");
+await wait(50);
+check("Scan opens the camera straight away, with no weight asked for",
+      app.visible().join() === "scanning", app.visible().join());
+
+camera.showBarcode(NUTELLA_BARCODE);
+await wait(300);
+check("a decoded barcode moves to loading", app.visible().join() === "loading", app.visible().join());
+
+releaseFetch();
+await wait(100);
+globalThis.fetch = ungated;
+check("the lookup lands on results", app.visible().join() === "results", app.visible().join());
+check("grams default to 100", app.el("weight-results").value === "100", app.el("weight-results").value);
+check("the 100 g baseline is shown (539 kcal)", /^539 kcal/.test(app.headline()[0]), app.headline()[0]);
+check("Add and Save are ready at the default",
+      !app.el("btn-add-total").disabled && !app.el("btn-save-meal").disabled);
+
+setGrams("50");
+check("entering grams recalculates live (270 kcal)", /^270 kcal/.test(app.headline()[0]), app.headline()[0]);
+
+app.click("btn-add-total");
+check("Add credits the grams entered on results", app.totals() === "270 / 3.1", app.totals());
+check("and logs that weight",
+      stored("nutri-scanner-history")?.length === 1 && stored("nutri-scanner-history")[0].weight === 50,
+      app.store.get("nutri-scanner-history"));
+await wait(1200);
+check("then returns home", app.visible().join() === "idle", app.visible().join());
+
+app.store.clear();
+await app.loadApp();
+
+// ──────────────────────────── manual entry ────────────────────────────
+
+section("manual entry");
+
+let manualFetches = 0;
+const beforeManual = globalThis.fetch;
+globalThis.fetch = (...args) => { manualFetches++; return beforeManual(...args); };
+app.el("manual-barcode").value = "1234";
+app.el("manual-form").listeners.submit({ preventDefault() {} });
+check("too few digits shows an inline error", !app.el("manual-error").hidden, app.el("manual-error").textContent);
+check("and looks nothing up", manualFetches === 0 && app.visible().join() === "idle", `${manualFetches} requests`);
+globalThis.fetch = beforeManual;
+
+await app.lookup(NUTELLA_BARCODE);
+check("a barcode alone reaches results", app.visible().join() === "results", app.visible().join());
+check("the earlier error is gone", app.el("manual-error").hidden === true);
+
+// ───────────────────── weight validation on results ───────────────────
+
+section("results weight validation");
+
+for (const bad of ["", "0", "-5", "abc", "99999"]) {
+  setGrams(bad);
+  check(`grams ${JSON.stringify(bad)}: error shown, Add and Save disabled, figures blanked`,
+        !app.el("weight-error").hidden
+        && app.el("btn-add-total").disabled && app.el("btn-save-meal").disabled
+        && app.headline().every((text) => text.startsWith("—")),
+        `${app.el("weight-error").textContent} | ${app.headline().join(" | ")}`);
+
+  // The harness fires listeners directly, past the disabled state — which is
+  // the point: the guard has to hold in the handlers, not just in the markup.
+  app.click("btn-add-total");
+  app.click("btn-save-meal");
+  check(`grams ${JSON.stringify(bad)}: forcing Add and Save credits and saves nothing`,
+        app.totals() === "0 / 0" && stored("nutri-scanner-history") === null && stored("nutri-scanner-meals") === null,
+        `${app.totals()} | ${app.store.get("nutri-scanner-history")} | ${app.store.get("nutri-scanner-meals")}`);
 }
-await wait(200);
+
+setGrams("50");
+check("a valid weight clears the error and re-enables both buttons",
+      app.el("weight-error").hidden && !app.el("btn-add-total").disabled && !app.el("btn-save-meal").disabled,
+      app.el("weight-error").textContent);
+check("and the figures come back", /^270 kcal/.test(app.headline()[0]), app.headline()[0]);
+
+// Save captures whatever the field holds at the moment it's pressed.
+app.click("btn-save-meal");
+check("save confirms", app.el("btn-save-meal").textContent === "Saved! ✓" && app.el("btn-save-meal").disabled);
+setGrams("75");
+check("editing grams after a save offers Save again",
+      app.el("btn-save-meal").textContent === "Save as Quick Add" && !app.el("btn-save-meal").disabled,
+      app.el("btn-save-meal").textContent);
+app.click("btn-save-meal");
+check("the second save stores the new weight",
+      stored("nutri-scanner-meals").map((meal) => meal.weight).join() === "50,75",
+      app.store.get("nutri-scanner-meals"));
+
+// Typing during the "Added! ✓" hand-off must not unlock a second add.
+setGrams("50");
+app.click("btn-add-total");
+setGrams("60");
+check("editing grams during the Added feedback keeps Add locked",
+      app.el("btn-add-total").disabled && app.el("btn-add-total").textContent === "Added! ✓",
+      app.el("btn-add-total").textContent);
+await wait(1200);
+check("exactly one item was credited", stored("nutri-scanner-history").length === 1, app.store.get("nutri-scanner-history"));
+
+await app.lookup(NUTELLA_BARCODE);
+check("the next product starts back at 100 g", app.el("weight-results").value === "100", app.el("weight-results").value);
+check("with Add usable again", !app.el("btn-add-total").disabled);
+
+app.click("btn-reset");
+app.store.clear();
+await app.loadApp();
 
 // ──────────────────────────── calculation ─────────────────────────────
 

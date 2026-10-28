@@ -113,6 +113,7 @@ body {
 }
 
 .btn:active { opacity: 0.75; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .manual-form { display: flex; flex-direction: column; gap: 10px; }
 

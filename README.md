@@ -1,6 +1,6 @@
 # Nutri Scanner
 
-A prototype: enter a weight in grams, scan a food product's barcode, and get the nutrition values scaled to that weight. Data comes from [Open Food Facts](https://world.openfoodfacts.org/).
+A prototype: scan a food product's barcode, then enter how many grams you're eating and get the nutrition values scaled to that weight. Data comes from [Open Food Facts](https://world.openfoodfacts.org/).
 
 Plain HTML, CSS and vanilla JS. No build step, no dependencies to install — the repo root *is* the site.
 
@@ -18,8 +18,8 @@ python -m http.server 8000
 ## Tests
 
 ```bash
-node test/run.mjs             # 153 checks, including the live API contract
-node test/run.mjs --offline   # 149 checks, no network needed
+node test/run.mjs             # 181 checks, including the live API contract
+node test/run.mjs --offline   # 177 checks, no network needed
 ```
 
 No dependencies and no test framework — just Node. `app.js` exports nothing and touches the DOM at load, so [test/harness.mjs](test/harness.mjs) stubs the handful of browser APIs it uses, imports **the real file**, fires the listeners it registered, and reads back what it rendered. Nothing in the suite reimplements the app's logic, so a check passing means the shipped code works.
@@ -29,7 +29,7 @@ Two deliberate choices worth knowing before you extend it:
 - **Arithmetic runs against a recorded fixture**, not the live database. Open Food Facts is crowd-sourced and editable; if someone corrects Nutella's entry, asserting `270 kcal` against the live API would fail for reasons that have nothing to do with our code. The live API is still checked, but for its *contract* — that `status: 1` still comes back and all eight nutriment keys `app.js` reads are still present and numeric. That's the thing that would otherwise break silently.
 - **The harness loads `app.js` as a copied `.mjs`.** This isn't incidental. The repo has no `package.json`, so Node treats a bare `.js` as CommonJS, and the CJS cache keys on filename alone — `?v=` cache-busting is silently ignored, the module never re-executes, and a "reload" test passes by reading stale text. That exact false pass hid a real bug during development. For the same reason, any check that reads rendered text after a reload should scribble a sentinel over it first, so "unchanged" can't masquerade as "correctly re-rendered".
 
-The suite covers input validation, scaling, kJ→kcal conversion, UPC-A/EAN-13 normalisation in both directions, the daily counter, the daily log (logging from both add routes, delete-decrements-total, zero clamping, and the counter-equals-log-sum invariant), saved quick-add meals (including id collisions under a frozen clock, malformed stored rows, and untrusted product names), persistence (corrupt storage, a throwing `setItem`), reset, and every error path.
+The suite covers the scan-first flow end to end (a stubbed camera and `BarcodeDetector` walk it through idle → scanning → loading → results → credited), weight validation on the results screen, scaling, kJ→kcal conversion, UPC-A/EAN-13 normalisation in both directions, the daily counter, the daily log (logging from both add routes, delete-decrements-total, zero clamping, and the counter-equals-log-sum invariant), saved quick-add meals (including id collisions under a frozen clock, malformed stored rows, and untrusted product names), persistence (corrupt storage, a throwing `setItem`), reset, and every error path.
 
 ## The HTTPS requirement
 
@@ -91,7 +91,9 @@ Bars cap at 100% so an overshoot can't paint outside the track — the card stil
 
 The four metrics are declared once in a `MACROS` list in [app.js](app.js), and totals, saved meals, log entries, targets and the cards all iterate it. That's deliberate: with four metrics hand-written in five places, crediting one and forgetting another is the obvious bug, and this makes it unexpressible.
 
-On a results screen, **Add to Daily Total** adds the current item and returns you home with the totals updated. Totals are kept in `localStorage`, so they survive refreshes and relaunching the installed app.
+Scanning starts straight from the home screen; the weight is entered on the results screen once the product is identified. It defaults to **100 g** — the label basis, so the first numbers you see match the pack — and every figure recalculates as you type, from the cached product with no refetch. An empty, zero, negative or over-10 000 g value shows an inline error, blanks the figures to `—`, and disables Add and Save; the handlers check too, so the disabled state isn't the only guard.
+
+On a results screen, **Add to Daily Total** adds the current item at the entered weight and returns you home with the totals updated. Totals are kept in `localStorage`, so they survive refreshes and relaunching the installed app.
 
 **Legacy data is read, not discarded.** Totals saved before carbs and fat existed used `{ kcal, protein }`; those calories are carried across rather than silently zeroing a counter mid-day, and saved meals or log entries missing carbs/fat read as 0 instead of `NaN`.
 
@@ -151,9 +153,9 @@ The idle screen has an **Enter barcode manually** link. It's there on purpose, n
 
 On desktop:
 
-1. Weight validation — empty, `0`, `-5`, `abc`, `99999` all show an inline error and never open the camera.
-2. Manual entry `3017620422003` at 50 g → ~270 kcal, "Nutella", thumbnail loads.
-3. Change grams on the results screen → numbers update with no network request.
+1. Manual entry `3017620422003` → "Nutella", thumbnail loads, grams default to 100 → ~539 kcal.
+2. Change grams to 50 → ~270 kcal, updating as you type, with no network request.
+3. Weight validation on the results screen — empty, `0`, `-5`, `99999` each show an inline error, grey out Add and Save, and blank the figures to `—`.
 4. Manual entry `0000000000000` → "Product not found in database."
 5. DevTools → Offline → any lookup → "Network error, please try again."
 6. Deny camera permission → a real message, not a dead screen.

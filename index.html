@@ -16,22 +16,30 @@
 </head>
 <body>
 
+<!-- The top bar and the bottom nav sit outside every view, so switching views
+     never hides them. -->
+<header class="topbar">
+  <div class="topbar-inner">
+    <h1 class="title">Nutri Scanner</h1>
+
+    <button id="btn-options" class="icon-btn" type="button" aria-label="Options"
+            aria-haspopup="menu" aria-expanded="false" aria-controls="options-menu">⋮</button>
+
+    <div id="options-menu" class="options-menu" role="menu" hidden>
+      <button id="btn-edit-goals" class="menu-item" type="button" role="menuitem">Edit Goals</button>
+      <button id="btn-reset-counter" class="menu-item" type="button" role="menuitem">Reset Counter</button>
+    </div>
+  </div>
+</header>
+
 <main class="app">
 
-  <h1 class="title">Nutri Scanner</h1>
-
-  <!-- ───────────── IDLE ───────────── -->
-  <section id="view-idle" class="view">
+  <!-- ───────────── HOME ───────────── -->
+  <section id="view-home" class="view">
     <div class="totals">
-      <!-- Cards are built in app.js from the MACROS list, so the four metrics
-           can never drift out of sync with the markup. -->
+      <!-- Cards are built in app.js from the MACROS list, so the metrics can
+           never drift out of sync with the markup. -->
       <div id="totals-grid" class="headline"></div>
-
-      <div class="totals-actions">
-        <button id="btn-edit-goals" class="btn btn-link" type="button"
-                aria-expanded="false" aria-controls="targets-form">Edit Goals</button>
-        <button id="btn-reset-counter" class="btn btn-link" type="button">Reset Counter</button>
-      </div>
 
       <!-- novalidate: the app does its own validation with specific inline
            messages. Without it the browser's native constraint check fires
@@ -58,19 +66,14 @@
         </div>
         <p id="targets-error" class="error-text" role="alert" hidden></p>
         <button class="btn btn-secondary" type="submit">Save Goals</button>
+        <button id="btn-goals-cancel" class="btn btn-link" type="button">Cancel</button>
       </form>
     </div>
 
-    <div class="log">
-      <h2 class="meals-title">Today's Log</h2>
-      <p id="log-empty" class="hint log-empty">No items logged today yet</p>
-      <div id="log-list" class="log-list"></div>
-    </div>
+    <button id="btn-scan" class="btn btn-primary" type="button">Scan Barcode</button>
 
-    <button id="btn-scan" class="btn btn-primary" type="button">Scan barcode</button>
-
-    <button id="btn-manual-toggle" class="btn btn-link" type="button"
-            aria-expanded="false" aria-controls="manual-form">Enter barcode manually</button>
+    <button id="btn-manual-toggle" class="btn btn-secondary" type="button"
+            aria-expanded="false" aria-controls="manual-form">Enter Barcode Manually</button>
 
     <form id="manual-form" class="manual-form" hidden>
       <input id="manual-barcode" class="text-input" type="text" inputmode="numeric"
@@ -79,8 +82,8 @@
       <button class="btn btn-secondary" type="submit">Look up</button>
     </form>
 
-    <button id="btn-custom-toggle" class="btn btn-link" type="button"
-            aria-expanded="false" aria-controls="custom-form">Add a custom item</button>
+    <button id="btn-custom-toggle" class="btn btn-secondary" type="button"
+            aria-expanded="false" aria-controls="custom-form">Add Custom Item</button>
 
     <!-- novalidate for the same reason as the goals form: the app does its own
          validation with specific inline messages, and native constraint checks
@@ -116,10 +119,19 @@
       <p id="custom-error" class="error-text" role="alert" hidden></p>
       <button id="btn-custom-submit" class="btn btn-secondary" type="submit">Log it</button>
     </form>
+  </section>
 
+  <!-- ────────────── LOG ───────────── -->
+  <section id="view-log" class="view" hidden>
     <div id="meals-section" class="meals" hidden>
       <h2 class="meals-title">Saved Meals</h2>
       <div id="meals-list" class="meals-list"></div>
+    </div>
+
+    <div class="log">
+      <h2 class="meals-title">Today's Log</h2>
+      <p id="log-empty" class="hint log-empty">No items logged today yet</p>
+      <div id="log-list" class="log-list"></div>
     </div>
   </section>
 
@@ -178,6 +190,30 @@
   <p id="diagnostics" class="diagnostics">engine: starting…</p>
 
 </main>
+
+<!-- Adding a tab: a button here with id="tab-<name>", a matching
+     <section id="view-<name>"> above, and "<name>" in TABS in app.js. -->
+<nav class="tabbar" aria-label="Main">
+  <div class="tabbar-inner">
+    <button id="tab-home" class="tab" type="button">
+      <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 10.5 12 3l9 7.5"/>
+        <path d="M5 9v11h5v-6h4v6h5V9"/>
+      </svg>
+      <span>Home</span>
+    </button>
+    <button id="tab-log" class="tab" type="button">
+      <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="5" y="4" width="14" height="17" rx="2"/>
+        <path d="M9 4V3h6v1"/>
+        <path d="M9 10h6M9 14h6M9 18h3"/>
+      </svg>
+      <span>Log</span>
+    </button>
+  </div>
+</nav>
 
 <canvas id="crop" hidden></canvas>
 <!-- ?v= is rewritten to the commit SHA when CI publishes. GitHub Pages serves

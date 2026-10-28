@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const APP_PATH = fileURLToPath(new URL("../app.js", import.meta.url));
-const VIEWS = ["idle", "scanning", "loading", "results", "error"];
+const VIEWS = ["home", "log", "scanning", "loading", "results", "error"];
 
 // `register` mirrors a real DOM closely enough for our purposes: an element
 // becomes findable by getElementById as soon as it is given an id, including
@@ -38,6 +38,9 @@ function makeElement(id, register) {
     removeAttribute(key) { delete this.attrs[key]; },
     append(...kids) { this.children.push(...kids); },
     replaceChildren(...kids) { this.children = kids; },
+    // Only knows about children added from code: elements from the markup
+    // are separate stubs with no parent link.
+    contains(other) { return other === this || this.children.some((kid) => kid.contains(other)); },
     focus() {},
     play() { return Promise.resolve(); },
     getContext() { return { drawImage() {} }; },
@@ -66,11 +69,14 @@ export function install() {
     return elements.get(id);
   };
 
+  // Each reload of app.js re-registers its listeners, replacing the previous
+  // module's — the same one-per-type model the element stubs use.
+  const documentListeners = {};
   globalThis.document = {
     hidden: false,
     getElementById: el,
     createElement: () => makeElement(undefined, register),
-    addEventListener() {},
+    addEventListener(type, fn) { documentListeners[type] = fn; },
   };
 
   const store = new Map();
@@ -109,6 +115,8 @@ export function install() {
     macros: () => ["calories", "protein", "carbs", "fat"].map((k) => el(`total-${k}`).textContent).join(" / "),
     /** Each counter card flattened to text, e.g. "270 / 2000 kcalCalories". */
     cards: () => el("totals-grid").children.map(textOf),
+    /** Only the counter cards actually shown on the home screen. */
+    homeCards: () => el("totals-grid").children.filter((card) => !card.hidden).map(textOf),
     /** The rendered width of one progress bar, e.g. "13.5%". */
     meter: (key) => el(`meter-${key}`).style.width,
     /** The four headline stat cards, flattened to text. */
@@ -130,6 +138,13 @@ export function install() {
       }
     },
     click: (id) => el(id).listeners.click(),
+    /**
+     * A click as the document sees it once it has bubbled up from `id`. Call
+     * it after click(id) to model a real tap, which reaches both listeners.
+     */
+    clickDocument: (id) => documentListeners.click?.({ target: el(id) }),
+    /** Which bottom-nav tab is marked current. */
+    activeTab: () => ["home", "log"].filter((t) => el(`tab-${t}`).attrs["aria-current"] === "page").join(),
     /**
      * Fakes a working camera and a native BarcodeDetector that sees nothing
      * until showBarcode() is called. Install before loadApp(): the detector is

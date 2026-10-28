@@ -31,11 +31,13 @@ const MAX_TARGET = 100000;
 // credited in one place and forgotten in another.
 //   key      — field name in totals / meals / history / targets
 //   source   — matching field on currentValues()
+//   onHome   — whether its card shows on the home screen. A macro without a
+//              card is still credited, stored and targeted exactly the same.
 const MACROS = [
-  { key: "calories", source: "kcal",          label: "Calories", unit: "kcal", decimals: 0, fallback: 2000 },
-  { key: "protein",  source: "proteins",      label: "Protein",  unit: "g",    decimals: 1, fallback: 150 },
-  { key: "carbs",    source: "carbohydrates", label: "Carbs",    unit: "g",    decimals: 1, fallback: 250 },
-  { key: "fat",      source: "fat",           label: "Fat",      unit: "g",    decimals: 1, fallback: 70 },
+  { key: "calories", source: "kcal",          label: "Calories", unit: "kcal", decimals: 0, fallback: 2000, onHome: true },
+  { key: "protein",  source: "proteins",      label: "Protein",  unit: "g",    decimals: 1, fallback: 150,  onHome: true },
+  { key: "carbs",    source: "carbohydrates", label: "Carbs",    unit: "g",    decimals: 1, fallback: 250,  onHome: false },
+  { key: "fat",      source: "fat",           label: "Fat",      unit: "g",    decimals: 1, fallback: 70,   onHome: false },
 ];
 
 const zeroTotals = () => Object.fromEntries(MACROS.map((m) => [m.key, 0]));
@@ -64,8 +66,11 @@ const els = {
   btnSaveMeal: $("btn-save-meal"),
   btnReset: $("btn-reset"),
   totalsGrid: $("totals-grid"),
+  btnOptions: $("btn-options"),
+  optionsMenu: $("options-menu"),
   btnResetCounter: $("btn-reset-counter"),
   btnEditGoals: $("btn-edit-goals"),
+  btnGoalsCancel: $("btn-goals-cancel"),
   targetsForm: $("targets-form"),
   targetsError: $("targets-error"),
   btnCustomToggle: $("btn-custom-toggle"),
@@ -85,8 +90,16 @@ const els = {
   crop: $("crop"),
 };
 
-const VIEWS = ["idle", "scanning", "loading", "results", "error"];
+// Bottom-nav tabs. Each one is a <button id="tab-NAME"> in the nav bar and a
+// <section id="view-NAME">; adding a tab is one entry here plus that markup.
+const TABS = ["home", "log"];
+const VIEWS = [...TABS, "scanning", "loading", "results", "error"];
 
+let view = "home";
+// Bumped by every reset(). A camera start or lookup still awaiting when the
+// user navigates away compares against it and drops its result, rather than
+// yanking them back to a scan they have already left.
+let flow = 0;
 let product = null;      // cached OFF product, so weight edits never refetch
 let engineLabel = "starting…";
 let totals = zeroTotals();
@@ -100,12 +113,21 @@ let customTimer = null;
 // ───────────────────────── view state ─────────────────────────
 
 function setState(name) {
-  for (const view of VIEWS) $(`view-${view}`).hidden = view !== name;
+  view = name;
+  for (const v of VIEWS) $(`view-${v}`).hidden = v !== name;
 
-  // Every route to idle passes through here — reset(), init and the
-  // visibilitychange handler — so the lists can't go stale via a path that
-  // forgot to refresh them.
-  if (name === "idle") {
+  // The scan flow belongs to Home, so its tab stays lit through scanning,
+  // loading and results.
+  const activeTab = TABS.includes(name) ? name : "home";
+  for (const tab of TABS) {
+    if (tab === activeTab) $(`tab-${tab}`).setAttribute("aria-current", "page");
+    else $(`tab-${tab}`).removeAttribute("aria-current");
+  }
+
+  // Saving a meal from the results screen doesn't repaint the list, since it
+  // isn't on screen. Every route into the Log tab passes through here, so the
+  // lists can't go stale via a path that forgot to refresh them.
+  if (name === "log") {
     renderMeals();
     renderHistory();
   }
@@ -222,7 +244,7 @@ function cameraErrorMessage(err) {
     ];
   }
   if (name === "NotFoundError" || name === "OverconstrainedError") {
-    return ["No camera found on this device.", "You can still use “Enter barcode manually”."];
+    return ["No camera found on this device.", "You can still use “Enter Barcode Manually”."];
   }
   if (name === "NotReadableError" || name === "AbortError") {
     return ["The camera is already in use.", "Close other apps or tabs using the camera, then try again."];
@@ -242,9 +264,11 @@ async function startCamera() {
   }
 
   setState("scanning");
+  const mine = flow;
 
+  let opened;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({
+    opened = await navigator.mediaDevices.getUserMedia({
       video: {
         facingMode: { ideal: "environment" },
         width: { ideal: 1920 },
@@ -252,11 +276,20 @@ async function startCamera() {
       },
     });
   } catch (err) {
+    if (mine !== flow) return;
     const [message, detail] = cameraErrorMessage(err);
     showError(message, detail);
     return;
   }
 
+  // Left while the permission prompt was up: release the camera rather than
+  // leave its indicator on behind whatever screen they went to.
+  if (mine !== flow) {
+    for (const track of opened.getTracks()) track.stop();
+    return;
+  }
+
+  stream = opened;
   els.video.srcObject = stream;
   try { await els.video.play(); } catch { /* autoplay attrs normally cover it */ }
 
@@ -264,13 +297,15 @@ async function startCamera() {
     await ensureDetector();
   } catch {
     stopCamera();
+    if (mine !== flow) return;
     showError(
       "Could not load the barcode scanner.",
-      "The decoder is fetched from a CDN on first load. Check your connection, or use “Enter barcode manually”.",
+      "The decoder is fetched from a CDN on first load. Check your connection, or use “Enter Barcode Manually”.",
     );
     return;
   }
 
+  if (mine !== flow) return;   // reset() has already stopped the stream
   scanning = true;
   setDiagnostics("scanning");
   scanLoop();
@@ -375,12 +410,15 @@ async function fetchProduct(code) {
 }
 
 async function lookUp(code) {
+  const mine = flow;
   setState("loading");
   els.loadingText.textContent = `Looking up ${code}…`;
 
   try {
     for (const variant of barcodeVariants(code)) {
       const found = await fetchProduct(variant);
+      // Navigated away mid-lookup: the answer is no longer wanted.
+      if (mine !== flow) return;
       if (found) {
         product = found;
         renderResults(code);
@@ -392,6 +430,7 @@ async function lookUp(code) {
       `Barcode ${code} isn't in Open Food Facts. It's a crowd-sourced database, so local and store-brand products are often missing — that isn't a scanning fault.`,
     );
   } catch (err) {
+    if (mine !== flow) return;
     if (err instanceof NetworkError) {
       showError("Network error, please try again.", "The lookup could not reach Open Food Facts.");
     } else {
@@ -665,6 +704,9 @@ function renderTotals() {
 
     const card = document.createElement("div");
     card.className = "stat";
+    // Built and kept current even when hidden, so showing a macro again is a
+    // one-flag change in MACROS.
+    card.hidden = !macro.onHome;
 
     const value = document.createElement("div");
     value.className = "stat-value";
@@ -727,7 +769,7 @@ function creditTotals(item) {
 
   renderTotals();
   // A quick-add happens while the log is already on screen, so it has to
-  // repaint now rather than waiting for the next transition to idle.
+  // repaint now rather than waiting for the next visit to the Log tab.
   renderHistory();
 }
 
@@ -762,9 +804,9 @@ function resetCounter() {
 
 // ────────────────────── saved quick-add meals ─────────────────
 // The in-memory array is the source of truth, loaded once at init. Re-reading
-// storage on every idle transition would look equivalent but loses data on iOS
-// Private Browsing, where writes throw: the meal just saved would vanish the
-// moment the app returned home.
+// storage on every visit to the Log tab would look equivalent but loses data
+// on iOS Private Browsing, where writes throw: the meal just saved would
+// vanish the moment you opened the tab to use it.
 
 // Saved meals and log entries carry the same nutrition fields, so one shape
 // check serves both. Only calories and protein are required: rows written
@@ -829,8 +871,8 @@ function addSavedMeal(id, button) {
 
   creditTotals(meal);   // already normalized, so every macro is present
 
-  // The totals sit directly above, so they visibly move; this just confirms the
-  // tap landed on the row you meant. renderMeals() restores the label.
+  // The totals are on the Home tab, out of sight, so this and the new row in
+  // Today's Log below are the confirmation. renderMeals() restores the label.
   button.textContent = "Added! ✓";
   button.disabled = true;
   clearTimeout(mealAddedTimer);
@@ -980,17 +1022,14 @@ function renderTargetInputs() {
 function closeTargetsForm() {
   els.targetsForm.hidden = true;
   els.targetsError.hidden = true;
-  els.btnEditGoals.setAttribute("aria-expanded", "false");
 }
 
-function toggleTargetsForm() {
-  if (!els.targetsForm.hidden) {
-    closeTargetsForm();
-    return;
-  }
+// Reached from the options menu, which is on every screen. The form edits the
+// goals shown on the Home cards, so it opens there.
+function openTargetsForm() {
+  if (view !== "home") reset();
   els.targetsForm.hidden = false;
   els.targetsError.hidden = true;
-  els.btnEditGoals.setAttribute("aria-expanded", "true");
   renderTargetInputs();              // always opens showing what's actually saved
   $(`target-${MACROS[0].key}`).focus();
 }
@@ -1089,11 +1128,14 @@ function renderHistory() {
 
 // ───────────────────────── interactions ───────────────────────
 
-function reset() {
+// Ends whatever the scan flow was doing and lands on a tab — Home unless told
+// otherwise. Every tab switch comes through here too.
+function reset(target = "home") {
+  flow++;
   stopCamera();
 
   // Cancel any pending "Added! ✓" hand-off, so a stray timer can't yank the
-  // user back to idle after they've already navigated somewhere else.
+  // user back home after they've already navigated somewhere else.
   clearTimeout(addedTimer);
   addedTimer = null;
   els.btnAddTotal.textContent = "Add to Daily Total";
@@ -1113,19 +1155,51 @@ function reset() {
   clearCustomForm();
   els.headline.replaceChildren();
   els.secondary.replaceChildren();
-  setState("idle");
+  setState(target);
   setDiagnostics();
 }
 
+function openTab(tab) {
+  if (view === tab) return;   // re-tapping the current tab keeps any open form
+  reset(tab);
+}
+
+// ───────────────────────── options menu ───────────────────────
+
+function closeMenu() {
+  els.optionsMenu.hidden = true;
+  els.btnOptions.setAttribute("aria-expanded", "false");
+}
+
+function toggleMenu() {
+  const opening = els.optionsMenu.hidden;
+  els.optionsMenu.hidden = !opening;
+  els.btnOptions.setAttribute("aria-expanded", String(opening));
+}
+
+// Wrapped rather than passed directly: as a listener, reset would receive the
+// click event as its target view.
 els.btnScan.addEventListener("click", startCamera);
-els.btnCancelScan.addEventListener("click", reset);
-els.btnReset.addEventListener("click", reset);
-els.btnErrorReset.addEventListener("click", reset);
+els.btnCancelScan.addEventListener("click", () => reset());
+els.btnReset.addEventListener("click", () => reset());
+els.btnErrorReset.addEventListener("click", () => reset());
 els.btnAddTotal.addEventListener("click", addToTotal);
 els.btnSaveMeal.addEventListener("click", saveMeal);
-els.btnResetCounter.addEventListener("click", resetCounter);
-els.btnEditGoals.addEventListener("click", toggleTargetsForm);
+els.btnOptions.addEventListener("click", toggleMenu);
+els.btnResetCounter.addEventListener("click", () => { closeMenu(); resetCounter(); });
+els.btnEditGoals.addEventListener("click", () => { closeMenu(); openTargetsForm(); });
+els.btnGoalsCancel.addEventListener("click", closeTargetsForm);
 els.targetsForm.addEventListener("submit", saveTargets);
+
+for (const tab of TABS) $(`tab-${tab}`).addEventListener("click", () => openTab(tab));
+
+// A click anywhere outside the menu closes it. The ⋮ button is excluded: its
+// own handler has just toggled the menu, and the same click bubbles up here.
+document.addEventListener("click", (event) => {
+  if (els.optionsMenu.hidden) return;
+  if (els.optionsMenu.contains(event.target) || els.btnOptions.contains(event.target)) return;
+  closeMenu();
+});
 els.btnCustomToggle.addEventListener("click", toggleCustomForm);
 els.customForm.addEventListener("submit", submitCustom);
 
@@ -1155,10 +1229,7 @@ els.manualForm.addEventListener("submit", (event) => {
 
 // Don't leave the camera indicator on when the page is backgrounded.
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden && scanning) {
-    stopCamera();
-    setState("idle");
-  }
+  if (document.hidden && scanning) reset();
 });
 
 if ("serviceWorker" in navigator) {
@@ -1170,9 +1241,12 @@ totals = loadTotals();
 meals = loadMeals();
 history = loadHistory();
 // The markup ships these hidden; own that state in code too.
+closeMenu();
 closeTargetsForm();
 closeCustomForm();
 renderTotals();
-setState("idle");   // also renders the saved meals and today's log
+renderMeals();
+renderHistory();
+setState("home");
 setDiagnostics();
 ensureDetector().catch(() => { /* reported via the diagnostics line */ });

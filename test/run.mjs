@@ -37,12 +37,12 @@ const setGrams = (value) => {
 const stored = (key) => JSON.parse(app.store.get(key) || "null");
 
 // ─────────────────────────── scan-first flow ──────────────────────────
-// idle → scanning → loading → results → (enter grams) → credited, through the
+// home → scanning → loading → results → (enter grams) → credited, through the
 // real camera path rather than manual entry.
 
 section("scan-first flow");
 
-check("starts on the home screen", app.visible().join() === "idle", app.visible().join());
+check("starts on the home screen", app.visible().join() === "home", app.visible().join());
 
 // Hold the lookup open so the loading state can be observed, not just inferred.
 let releaseFetch;
@@ -77,7 +77,145 @@ check("and logs that weight",
       stored("nutri-scanner-history")?.length === 1 && stored("nutri-scanner-history")[0].weight === 50,
       app.store.get("nutri-scanner-history"));
 await wait(1200);
-check("then returns home", app.visible().join() === "idle", app.visible().join());
+check("then returns home", app.visible().join() === "home", app.visible().join());
+
+app.store.clear();
+await app.loadApp();
+
+// ─────────────────────── navigation and layout ────────────────────────
+
+section("navigation and layout");
+
+const showing = () => app.visible().join();
+const menuOpen = () => app.el("options-menu").hidden === false;
+
+check("Home is the active tab at start", app.activeTab() === "home", app.activeTab());
+
+const shownCards = app.homeCards();
+check("Home shows only the Calories and Protein cards",
+      shownCards.length === 2 && shownCards[0].endsWith("Calories") && shownCards[1].endsWith("Protein"),
+      shownCards.join(" | "));
+check("the carbs and fat cards still exist, just hidden", app.cards().length === 4, String(app.cards().length));
+
+// Where things live is a property of the markup, so read the markup. The stub
+// DOM has no parent links, so this can't be asked of the elements themselves.
+const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+const sectionOf = (name) => {
+  const start = html.indexOf(`id="view-${name}"`);
+  return html.slice(start, html.indexOf("</section>", start));
+};
+const homeHtml = sectionOf("home");
+const logHtml = sectionOf("log");
+const order = ["totals-grid", "btn-scan", "btn-manual-toggle", "btn-custom-toggle"].map((id) => homeHtml.indexOf(`id="${id}"`));
+check("Home holds the cards, Scan, Manual Entry and Custom Item, in that order",
+      order.every((at, i) => at >= 0 && (i === 0 || at > order[i - 1])), order.join(", "));
+check("Saved Meals and Today's Log are on the Log tab, not Home",
+      !homeHtml.includes('id="meals-list"') && !homeHtml.includes('id="log-list"')
+      && logHtml.indexOf('id="meals-list"') >= 0 && logHtml.indexOf('id="meals-list"') < logHtml.indexOf('id="log-list"'));
+check("Edit Goals and Reset Counter live only in the options menu",
+      !homeHtml.includes('id="btn-edit-goals"') && !homeHtml.includes('id="btn-reset-counter"')
+      && /id="options-menu"[\s\S]*id="btn-edit-goals"[\s\S]*id="btn-reset-counter"/.test(html));
+check("the top bar and bottom nav sit outside every view",
+      ["home", "log", "scanning", "loading", "results", "error"]
+        .every((name) => !/id="(btn-options|tab-home|tab-log)"/.test(sectionOf(name))));
+
+// ── switching tabs ──
+
+app.click("tab-log");
+check("tapping Log shows only the Log view", showing() === "log", showing());
+check("and marks Log as the active tab", app.activeTab() === "log", app.activeTab());
+app.click("tab-home");
+check("tapping Home goes back", showing() === "home" && app.activeTab() === "home", `${showing()} / ${app.activeTab()}`);
+
+app.click("btn-custom-toggle");
+app.click("tab-home");
+check("re-tapping the current tab leaves an open form alone", app.el("custom-form").hidden === false);
+app.click("tab-log");
+app.click("tab-home");
+check("switching away and back closes it", app.el("custom-form").hidden === true);
+
+// ── the nav during the scan flow ──
+
+app.click("btn-scan");
+await wait(50);
+check("scanning keeps Home as the active tab", showing() === "scanning" && app.activeTab() === "home",
+      `${showing()} / ${app.activeTab()}`);
+app.click("tab-log");
+camera.showBarcode(NUTELLA_BARCODE);
+await wait(300);
+check("leaving mid-scan stops the scanner: a barcode in view afterwards is ignored",
+      showing() === "log", showing());
+camera.showBarcode(null);
+
+// The camera prompt can still be up when the user leaves. Granting it later
+// must not start a scan behind the screen they went to.
+let stoppedTracks = 0;
+let grantCamera;
+const instantCamera = navigator.mediaDevices.getUserMedia;
+navigator.mediaDevices.getUserMedia = () => new Promise((resolve) => {
+  grantCamera = () => resolve({ getTracks: () => [{ stop() { stoppedTracks++; } }] });
+});
+app.click("tab-home");
+app.click("btn-scan");
+await wait(20);
+app.click("tab-log");
+grantCamera();
+await wait(50);
+check("leaving during the camera prompt releases the camera once it's granted",
+      stoppedTracks === 1 && showing() === "log", `${stoppedTracks} stopped, on ${showing()}`);
+navigator.mediaDevices.getUserMedia = instantCamera;
+
+// A lookup that answers after the user has left must not drag them back.
+let releaseLookup;
+const lookupGate = new Promise((resolve) => { releaseLookup = resolve; });
+const ungatedLookup = globalThis.fetch;
+globalThis.fetch = async (...args) => { await lookupGate; return ungatedLookup(...args); };
+app.click("tab-home");
+app.el("manual-barcode").value = NUTELLA_BARCODE;
+app.el("manual-form").listeners.submit({ preventDefault() {} });
+check("a manual lookup shows loading", showing() === "loading", showing());
+app.click("tab-log");
+releaseLookup();
+await wait(100);
+globalThis.fetch = ungatedLookup;
+check("a lookup that lands after you left doesn't pull you back to results", showing() === "log", showing());
+
+await app.lookup(NUTELLA_BARCODE);
+check("results keep Home as the active tab", showing() === "results" && app.activeTab() === "home",
+      `${showing()} / ${app.activeTab()}`);
+app.click("tab-log");
+check("leaving results through the nav credits nothing",
+      app.totals() === "0 / 0" && stored("nutri-scanner-history") === null, app.totals());
+
+// ── options menu ──
+
+check("the options menu starts closed", !menuOpen());
+// A real tap reaches the button's listener, then bubbles to the document's.
+app.click("btn-options");
+app.clickDocument("btn-options");
+check("⋮ opens it", menuOpen() && app.el("btn-options").attrs["aria-expanded"] === "true");
+app.clickDocument("view-log");
+check("a click outside closes it", !menuOpen() && app.el("btn-options").attrs["aria-expanded"] === "false");
+app.click("btn-options");
+app.click("btn-options");
+check("⋮ a second time closes it too", !menuOpen());
+
+app.click("btn-options");
+app.click("btn-edit-goals");
+app.clickDocument("btn-edit-goals");
+check("Edit Goals closes the menu", !menuOpen());
+check("and opens the goals form on Home, from any tab",
+      showing() === "home" && app.activeTab() === "home" && app.el("targets-form").hidden === false,
+      `${showing()} / form hidden: ${app.el("targets-form").hidden}`);
+app.click("btn-goals-cancel");
+check("Cancel closes the goals form", app.el("targets-form").hidden === true);
+
+let resetAsked = 0;
+globalThis.confirm = () => { resetAsked++; return false; };
+app.click("btn-options");
+app.click("btn-reset-counter");
+check("Reset Counter closes the menu and asks first", !menuOpen() && resetAsked === 1, `${resetAsked} confirms`);
+globalThis.confirm = () => true;
 
 app.store.clear();
 await app.loadApp();
@@ -92,7 +230,7 @@ globalThis.fetch = (...args) => { manualFetches++; return beforeManual(...args);
 app.el("manual-barcode").value = "1234";
 app.el("manual-form").listeners.submit({ preventDefault() {} });
 check("too few digits shows an inline error", !app.el("manual-error").hidden, app.el("manual-error").textContent);
-check("and looks nothing up", manualFetches === 0 && app.visible().join() === "idle", `${manualFetches} requests`);
+check("and looks nothing up", manualFetches === 0 && app.visible().join() === "home", `${manualFetches} requests`);
 globalThis.fetch = beforeManual;
 
 await app.lookup(NUTELLA_BARCODE);
@@ -227,7 +365,7 @@ check("totals equal the values displayed (no rounding drift)",
       `${app.totals()} vs displayed ${shownKcal} / ${shownProtein}`);
 
 await wait(1200);
-check("returns to idle after the feedback delay", app.visible().join() === "idle", app.visible().join());
+check("returns home after the feedback delay", app.visible().join() === "home", app.visible().join());
 check("add button is reusable again",
       app.el("btn-add-total").textContent === "Add to Daily Total" && !app.el("btn-add-total").disabled);
 
@@ -247,7 +385,7 @@ check("totals are written to localStorage",
 // Scribbling over the rendered text first: without this, "stale text that was
 // never re-rendered" is indistinguishable from "reloaded and rendered the same
 // value", and the check passes for the wrong reason.
-app.el("total-kcal").textContent = "STALE";
+app.el("total-calories").textContent = "STALE";
 app.el("total-protein").textContent = "STALE";
 await app.loadApp();
 check("totals survive a reload", app.totals() === "540 / 6.2", app.totals());
@@ -353,7 +491,8 @@ check("meal stored with the values that were displayed",
       && storedMeals()[0].protein === 3.1, JSON.stringify(storedMeals()[0]));
 
 app.click("btn-reset");
-check("section appears on idle once something is saved", app.el("meals-section").hidden === false);
+app.click("tab-log");
+check("section appears on the Log tab once something is saved", app.el("meals-section").hidden === false);
 check("label matches the addendum's format",
       mealLabels()[0] === "Nutella — 50g (270 kcal, 3.1g)", mealLabels()[0]);
 check("save button is usable again after reset",
@@ -387,6 +526,7 @@ app.click("btn-reset");
 await app.lookup(NUTELLA_BARCODE, 100);
 app.click("btn-save-meal");
 app.click("btn-reset");
+app.click("tab-log");
 Date.now = realNow;
 
 const bothMeals = storedMeals();
@@ -441,6 +581,7 @@ try { app.click("btn-save-meal"); } catch (err) { saveThrew = err; }
 check("saving survives a throwing setItem", saveThrew === null, saveThrew && saveThrew.message);
 
 app.click("btn-reset");
+app.click("tab-log");
 check("the meal still lists for the session when storage is unavailable",
       mealRows().length === 1, mealLabels().join(" | "));
 tapMeal(0);
@@ -465,6 +606,7 @@ await app.loadApp();
 await app.lookup("4444444444444", 100);
 app.click("btn-save-meal");
 app.click("btn-reset");
+app.click("tab-log");
 
 const nastyButton = mealRows()[0].children[0];
 check("an untrusted product name renders as inert literal text",
@@ -525,6 +667,7 @@ check("totals agree with the log", app.totals() === "270 / 3.1", app.totals());
 await app.lookup(NUTELLA_BARCODE, 100);
 app.click("btn-save-meal");
 app.click("btn-reset");
+app.click("tab-log");
 tapMeal(0);
 await wait(1200);
 
@@ -648,7 +791,7 @@ const submitTargets = () => app.el("targets-form").listeners.submit({ preventDef
 app.store.delete(TARGETS_KEY);
 await clearAll();
 
-check("four counter cards render", app.cards().length === 4, String(app.cards().length));
+check("all four counter cards are built", app.cards().length === 4, String(app.cards().length));
 check("cards show current against the default target",
       app.cards()[0].startsWith("0 / 2000 kcal") && app.cards()[2].startsWith("0 / 250 g"),
       app.cards().join(" | "));
@@ -676,6 +819,7 @@ check("a saved meal stores all four",
       storedMeals()[0].carbs === 57.5 && storedMeals()[0].fat === 30.9,
       JSON.stringify(storedMeals()[0]));
 app.click("btn-reset");
+app.click("tab-log");
 tapMeal(0);
 await wait(1200);
 check("a quick-add credits all four", app.macros() === "809 / 9.4 / 86.3 / 46.3", app.macros());

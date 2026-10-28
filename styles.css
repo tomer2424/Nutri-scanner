@@ -9,6 +9,8 @@
   --danger: #b91c1c;
   --danger-bg: #fef2f2;
   --radius: 14px;
+  --topbar-height: 56px;
+  --tabbar-height: 60px;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -39,20 +41,139 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 
+/* The top bar and bottom nav are fixed, so the content is padded clear of
+   both — otherwise the first card hides under the header and the last button
+   under the tabs. */
 .app {
   max-width: 520px;
   margin: 0 auto;
-  padding: calc(env(safe-area-inset-top) + 20px)
+  padding: calc(env(safe-area-inset-top) + var(--topbar-height) + 20px)
            calc(env(safe-area-inset-right) + 18px)
-           calc(env(safe-area-inset-bottom) + 24px)
+           calc(env(safe-area-inset-bottom) + var(--tabbar-height) + 24px)
            calc(env(safe-area-inset-left) + 18px);
 }
 
+/* ── top bar ── */
+
+.topbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  padding-top: env(safe-area-inset-top);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.topbar-inner {
+  position: relative;
+  max-width: 520px;
+  height: var(--topbar-height);
+  margin: 0 auto;
+  padding: 0 calc(env(safe-area-inset-right) + 6px) 0 calc(env(safe-area-inset-left) + 18px);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
 .title {
-  margin: 0 0 22px;
-  font-size: 1.3rem;
+  margin: 0;
+  font-size: 1.2rem;
   font-weight: 650;
   letter-spacing: -0.01em;
+}
+
+.icon-btn {
+  width: 44px;
+  height: 44px;
+  font-size: 1.4rem;
+  line-height: 1;
+  color: var(--text);
+  background: none;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.icon-btn:active, .icon-btn[aria-expanded="true"] { background: var(--bg); }
+
+.options-menu {
+  position: absolute;
+  top: calc(var(--topbar-height) - 6px);
+  right: calc(env(safe-area-inset-right) + 8px);
+  min-width: 190px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+}
+
+.menu-item {
+  min-height: 44px;
+  padding: 10px 14px;
+  font: inherit;
+  font-size: 0.95rem;
+  text-align: left;
+  color: var(--text);
+  background: none;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.menu-item:active { background: var(--bg); }
+
+/* ── bottom nav ── */
+
+.tabbar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  z-index: 10;
+  padding-bottom: env(safe-area-inset-bottom);
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+}
+
+/* Tabs share the width equally, so a third or fourth needs no CSS change. */
+.tabbar-inner {
+  max-width: 520px;
+  height: var(--tabbar-height);
+  margin: 0 auto;
+  display: flex;
+}
+
+.tab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.tab svg { width: 24px; height: 24px; }
+
+/* Colour plus a bar along the top edge, so the active tab doesn't rely on
+   colour alone. */
+.tab[aria-current="page"] {
+  color: var(--accent);
+  box-shadow: inset 0 2px 0 var(--accent);
 }
 
 .view { display: flex; flex-direction: column; gap: 14px; }
@@ -133,14 +254,12 @@ body {
 .totals {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding-bottom: 18px;
-  border-bottom: 1px solid var(--border);
+  gap: 12px;
+  margin-bottom: 6px;
 }
 
-.totals-actions { display: flex; justify-content: center; gap: 18px; }
-
-/* Four cards at this size need tighter numbers than the per-item results. */
+/* Counter cards carry "current / target", so they need tighter numbers than
+   the per-item results. */
 .totals .stat-value { font-size: 1.3rem; }
 .totals .stat-unit { font-size: 0.8rem; }
 
@@ -206,21 +325,15 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding-bottom: 18px;
-  border-bottom: 1px solid var(--border);
 }
 
 .log-empty { text-align: left; }
 
-/* Capped and scrollable so a long log can't push the scan button off-screen —
-   it sits above the main action, where the addendum asks for it. */
+/* Uncapped: the log has its own tab now, so the page scrolls instead. */
 .log-list {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  max-height: 210px;
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
 }
 
 .log-row {
@@ -253,8 +366,8 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding-top: 18px;
-  border-top: 1px solid var(--border);
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--border);
 }
 
 .meals-title {

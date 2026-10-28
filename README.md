@@ -18,8 +18,8 @@ python -m http.server 8000
 ## Tests
 
 ```bash
-node test/run.mjs             # 181 checks, including the live API contract
-node test/run.mjs --offline   # 177 checks, no network needed
+node test/run.mjs             # 208 checks, including the live API contract
+node test/run.mjs --offline   # 204 checks, no network needed
 ```
 
 No dependencies and no test framework — just Node. `app.js` exports nothing and touches the DOM at load, so [test/harness.mjs](test/harness.mjs) stubs the handful of browser APIs it uses, imports **the real file**, fires the listeners it registered, and reads back what it rendered. Nothing in the suite reimplements the app's logic, so a check passing means the shipped code works.
@@ -29,7 +29,7 @@ Two deliberate choices worth knowing before you extend it:
 - **Arithmetic runs against a recorded fixture**, not the live database. Open Food Facts is crowd-sourced and editable; if someone corrects Nutella's entry, asserting `270 kcal` against the live API would fail for reasons that have nothing to do with our code. The live API is still checked, but for its *contract* — that `status: 1` still comes back and all eight nutriment keys `app.js` reads are still present and numeric. That's the thing that would otherwise break silently.
 - **The harness loads `app.js` as a copied `.mjs`.** This isn't incidental. The repo has no `package.json`, so Node treats a bare `.js` as CommonJS, and the CJS cache keys on filename alone — `?v=` cache-busting is silently ignored, the module never re-executes, and a "reload" test passes by reading stale text. That exact false pass hid a real bug during development. For the same reason, any check that reads rendered text after a reload should scribble a sentinel over it first, so "unchanged" can't masquerade as "correctly re-rendered".
 
-The suite covers the scan-first flow end to end (a stubbed camera and `BarcodeDetector` walk it through idle → scanning → loading → results → credited), weight validation on the results screen, scaling, kJ→kcal conversion, UPC-A/EAN-13 normalisation in both directions, the daily counter, the daily log (logging from both add routes, delete-decrements-total, zero clamping, and the counter-equals-log-sum invariant), saved quick-add meals (including id collisions under a frozen clock, malformed stored rows, and untrusted product names), persistence (corrupt storage, a throwing `setItem`), reset, and every error path.
+The suite covers the scan-first flow end to end (a stubbed camera and `BarcodeDetector` walk it through home → scanning → loading → results → credited), the tab bar and options menu (including leaving mid-scan, mid-lookup and mid-permission-prompt), where each element lives in the markup, weight validation on the results screen, scaling, kJ→kcal conversion, UPC-A/EAN-13 normalisation in both directions, the daily counter, the daily log (logging from both add routes, delete-decrements-total, zero clamping, and the counter-equals-log-sum invariant), saved quick-add meals (including id collisions under a frozen clock, malformed stored rows, and untrusted product names), persistence (corrupt storage, a throwing `setItem`), reset, and every error path.
 
 ## The HTTPS requirement
 
@@ -83,9 +83,27 @@ The line at the bottom of the screen shows which engine is live:
 
 The wasm decoder is fetched from jsDelivr on first load (~1 MB) and warmed up before the camera opens.
 
+## Layout and navigation
+
+A fixed top bar carries the app name and a **⋮** options menu (**Edit Goals**, **Reset Counter**); a click anywhere outside the menu closes it. A fixed bottom nav switches between two tabs:
+
+- **Home** — the Calories and Protein cards, then **Scan Barcode**, **Enter Barcode Manually** and **Add Custom Item**. Nothing else.
+- **Log** — Saved Meals (quick-adds) on top, Today's Log below.
+
+Both bars sit outside every view, so they stay put whatever screen you're on. The scan flow (scanning, loading, results, errors) belongs to Home, so that tab stays lit through it.
+
+Tabs are declared once in a `TABS` list in [app.js](app.js). Adding a third: an entry there, a `<button id="tab-NAME">` in the nav, and a `<section id="view-NAME">`. The tabs share the bar's width equally, so no CSS changes.
+
+Some behaviour to know before you change it:
+
+- **Leaving the scan flow through the nav cancels it.** Every tab switch goes through `reset()`, which stops the camera and bumps a `flow` counter. A camera start or a lookup that's still awaiting checks the counter when it resumes and drops its result. Without that, a lookup answering after you'd moved to Log would yank you back to results, and a camera permission granted after you left would start scanning behind the Log screen with the camera light on. Tests cover both.
+- **Re-tapping the tab you're on does nothing**, so it can't wipe a half-filled custom-item form.
+- **Edit Goals opens the form on Home**, switching there first if needed, since the goals it edits are on the Home cards.
+- **Carbs and fat are still tracked; only their Home cards are hidden.** Each entry in `MACROS` has an `onHome` flag. The hidden cards are still built and kept current, and carbs and fat are still credited, stored, logged and targeted. The results screen, custom-item form and goals form still show all four. Showing them on Home again means flipping two flags.
+
 ## Daily counter and goals
 
-The home screen shows running totals for **calories, protein, carbs and fat**, each against a daily target, with a progress bar underneath. **Edit Goals** opens an inline form to set your own targets; they're stored in `nutri-scanner-targets` and default to 2000 kcal / 150 g / 250 g / 70 g. Targets are settings, not daily data, so Reset Counter leaves them alone.
+The home screen shows running totals for **calories and protein** against daily targets, with a progress bar underneath. Carbs and fat are tracked identically behind the scenes (see above). **Edit Goals** in the ⋮ menu opens an inline form to set your own targets; they're stored in `nutri-scanner-targets` and default to 2000 kcal / 150 g / 250 g / 70 g. Targets are settings, not daily data, so Reset Counter leaves them alone.
 
 Bars cap at 100% so an overshoot can't paint outside the track — the card still shows the real number (`30.9 / 30 g`), and a filled bar is outlined to mark the goal as met.
 
@@ -112,32 +130,32 @@ In iOS Safari Private Browsing, `localStorage` writes throw. The counter still w
 
 ## Today's log
 
-Every item credited to the counter — from a scan or a quick-add — is logged under **Today's Log** on the home screen, newest first. The `✕` beside an entry removes it *and* subtracts its calories and protein back out of the counter.
+Every item credited to the counter — from a scan, a quick-add or a custom item — is logged under **Today's Log** on the Log tab, newest first. The `✕` beside an entry removes it *and* subtracts its calories and protein back out of the counter.
 
 The log is written inside `creditTotals()`, the single function both add routes call, so an item cannot be credited without being logged. That's what makes the two reconcilable, and a test asserts the counter always equals the sum of the log — including after a delete.
 
 - **"Today" means "since you last reset"**, same as the counter. There's no midnight rollover, deliberately. Reset Counter clears the totals and the log together.
 - **Subtraction clamps at zero.** The counter is a running sum of rounded values, so a long sequence of adds and deletes shouldn't be able to leave a stray `-0.1` on screen.
-- **The list is capped and scrolls** at ~210px. The addendum places it directly under the counter, which is above the scan button; without a cap a long log would push the main action off-screen. Verified at iPhone viewport: with six entries the scan button still sits at 597px in a 749px viewport.
+- **The list isn't capped.** It used to scroll inside a ~210px box so it couldn't push the scan button off-screen. Now that it has its own tab, the page just scrolls.
 
 Stored under `nutri-scanner-history`, with the same validation and iOS Private Browsing guards as the other two keys.
 
 ## Saved quick-add meals
 
-**Save as Quick Add** on a results screen stores the product and that portion weight as a one-tap button on the home screen — `Nutella — 50g (270 kcal, 3.1g)`. Tapping it adds those values to the daily total without rescanning; the `✕` beside it deletes that meal immediately, with no confirmation.
+**Save as Quick Add** on a results screen stores the product and that portion weight as a one-tap button at the top of the Log tab — `Nutella — 50g (270 kcal, 3.1g)`. Tapping it adds those values to the daily total without rescanning; the `✕` beside it deletes that meal immediately, with no confirmation.
 
 A quick-add runs through the same `creditTotals()` call as the Add button, and the saved figures were produced by the same `displayed()` rounding, so adding a saved meal lands on exactly the same total as scanning the item and adding it live. A test asserts that.
 
 Two notes:
 
-- **The list renders from memory, not from storage on every visit.** The addendum specified re-reading storage on each return to the home screen. That would lose data in iOS Private Browsing, where writes throw: the meal you just saved would vanish the moment the app returned home. The array is loaded once at startup and written on every change, so a saved meal survives the session even when storage is unavailable — like the daily totals already do.
+- **The list renders from memory, not from storage on every visit.** The addendum specified re-reading storage on each return to the list. That would lose data in iOS Private Browsing, where writes throw: the meal you just saved would vanish the moment you opened the Log tab to use it. The array is loaded once at startup and written on every change, so a saved meal survives the session even when storage is unavailable — like the daily totals already do.
 - **Stored under `nutri-scanner-meals`**, not a bare `savedMeals`. Every GitHub Pages project on `tomer2424.github.io` shares one origin and therefore one `localStorage`, so an unnamespaced key would be a live collision risk with any other app published there.
 
-Product names come from Open Food Facts, which anyone can edit, and they're persisted and re-rendered on every visit home. Everything goes in via `textContent` and names are capped at 60 characters; a test saves a name containing `<img onerror=...>` and asserts it renders as inert literal text.
+Product names come from Open Food Facts, which anyone can edit, and they're persisted and re-rendered on every visit to the Log tab. Everything goes in via `textContent` and names are capped at 60 characters; a test saves a name containing `<img onerror=...>` and asserts it renders as inert literal text.
 
 ## Custom manual entry
 
-**Add a custom item** on the home screen logs something with no barcode and no API lookup: an optional name plus calories, protein, carbs and fat. Blank macro fields count as 0; negative or non-numeric values are rejected inline, and an entirely blank submission is refused rather than adding a meaningless `0 kcal` row. A checkbox optionally saves the item as a Quick Add at the same time.
+**Add Custom Item** on the home screen logs something with no barcode and no API lookup: an optional name plus calories, protein, carbs and fat. Blank macro fields count as 0; negative or non-numeric values are rejected inline, and an entirely blank submission is refused rather than adding a meaningless `0 kcal` row. A checkbox optionally saves the item as a Quick Add at the same time.
 
 It calls the same `creditTotals()` as a scan, so the totals, the progress bars and Today's Log all update through one path with no separate bookkeeping.
 
@@ -147,7 +165,7 @@ The name is untrusted input and goes in via `textContent`, capped at 60 characte
 
 ## Manual barcode entry
 
-The idle screen has an **Enter barcode manually** link. It's there on purpose, not as a nicety: it drives the exact same lookup and calculation path with the camera out of the loop, so when something breaks you can tell which half is at fault. It also rescues barcodes the decoder simply won't read.
+The home screen has an **Enter Barcode Manually** button. It's there on purpose, not as a nicety: it drives the exact same lookup and calculation path with the camera out of the loop, so when something breaks you can tell which half is at fault. It also rescues barcodes the decoder simply won't read.
 
 ## Testing checklist
 
@@ -161,7 +179,10 @@ On desktop:
 6. Deny camera permission → a real message, not a dead screen.
 7. In the console, run `BarcodeDetector.getSupportedFormats = async () => []` **before** the page finishes loading to simulate a Play-Services-less Redmi. The diagnostics line should read `engine: wasm` and scanning should still work. Worth doing deliberately — it's the one failure mode you can't reproduce on a phone that happens to have Play Services.
 8. Add `3017620422003` at 50 g twice → totals read `540 kcal` / `6.2 g`, matching the `270` / `3.1` shown each time.
-9. Refresh the page → totals are still there. Reset Counter → cancel leaves them alone, confirm zeroes them.
+9. Refresh the page → totals are still there. ⋮ → Reset Counter → cancel leaves them alone, confirm zeroes them.
+10. Home shows only the Calories and Protein cards and the three buttons. The Log tab shows Saved Meals above Today's Log. The top bar and bottom nav stay fixed while the page scrolls, and nothing sits hidden underneath either one.
+11. Start a scan, then tap **Log** → the camera light goes off and you stay on Log. Do the same during "Looking up…" → you aren't pulled back to the result.
+12. Open ⋮ and tap elsewhere on the page → the menu closes.
 
 On both phones:
 

@@ -880,6 +880,65 @@ check("a reset leaves targets alone", (() => {
   return app.cards()[0].startsWith("0 / 1500 kcal");
 })(), app.cards()[0]);
 
+// ── choosing which macros show on Home ──
+
+const HOME_KEY = "nutri-scanner-home";
+const storedShown = () => JSON.parse(app.store.get(HOME_KEY) || "null");
+const ticked = () => ["calories", "protein", "carbs", "fat"].filter((k) => app.el(`show-${k}`).checked);
+const cardLabels = () => app.homeCards().map((text) => text.replace(/^.*(kcal|g)/, ""));
+
+app.click("btn-edit-goals");
+check("the form ticks the macros currently on Home", ticked().join() === "calories,protein", ticked().join());
+
+app.el("show-carbs").checked = true;
+app.el("show-protein").checked = false;
+submitTargets();
+check("ticking Carbs and unticking Protein swaps their Home cards",
+      cardLabels().join() === "Calories,Carbs", cardLabels().join());
+check("the choice is stored", JSON.stringify(storedShown()) === '["calories","carbs"]', JSON.stringify(storedShown()));
+check("the goals saved alongside it are untouched",
+      JSON.stringify(storedTargets()) === JSON.stringify({ calories: 1500, protein: 120, carbs: 180, fat: 50 }),
+      JSON.stringify(storedTargets()));
+
+await app.lookup(NUTELLA_BARCODE, 50);
+app.click("btn-add-total");
+await wait(1200);
+check("a macro taken off Home is still credited", app.macros() === "270 / 3.1 / 28.8 / 15.4", app.macros());
+
+app.click("btn-edit-goals");
+app.el("show-protein").checked = true;
+app.click("btn-goals-cancel");
+check("Cancel discards checkbox changes", cardLabels().join() === "Calories,Carbs", cardLabels().join());
+
+await app.loadApp();
+check("the Home choice survives a reload", cardLabels().join() === "Calories,Carbs", cardLabels().join());
+
+app.click("btn-edit-goals");
+check("and the form reopens showing it", ticked().join() === "calories,carbs", ticked().join());
+for (const key of ["calories", "protein", "carbs", "fat"]) app.el(`show-${key}`).checked = false;
+app.el("targets-error").hidden = true;
+submitTargets();
+check("unticking everything is rejected",
+      !app.el("targets-error").hidden && app.el("targets-form").hidden === false,
+      app.el("targets-error").textContent);
+check("and commits nothing", JSON.stringify(storedShown()) === '["calories","carbs"]', JSON.stringify(storedShown()));
+app.click("btn-goals-cancel");
+
+for (const [bad, why] of [['"protein"', "not a list"], ["[]", "an empty list"], ['["sugar"]', "unknown keys"], ["not json", "unparseable"]]) {
+  app.store.set(HOME_KEY, bad);
+  await app.loadApp();
+  check(`a stored Home choice that is ${why} falls back to the defaults`,
+        cardLabels().join() === "Calories,Protein", cardLabels().join());
+}
+
+app.store.set(HOME_KEY, JSON.stringify(["fat", "sugar", "calories"]));
+await app.loadApp();
+check("unknown keys are dropped and the cards keep their usual order",
+      cardLabels().join() === "Calories,Fat", cardLabels().join());
+
+app.store.delete(HOME_KEY);
+await clearAll();
+
 // ── progress bar capping ──
 
 app.store.set(TARGETS_KEY, JSON.stringify({ calories: 100, protein: 1, carbs: 1, fat: 1 }));

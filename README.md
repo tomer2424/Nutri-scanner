@@ -18,8 +18,8 @@ python -m http.server 8000
 ## Tests
 
 ```bash
-node test/run.mjs             # 208 checks, including the live API contract
-node test/run.mjs --offline   # 204 checks, no network needed
+node test/run.mjs             # 223 checks, including the live API contract
+node test/run.mjs --offline   # 219 checks, no network needed
 ```
 
 No dependencies and no test framework — just Node. `app.js` exports nothing and touches the DOM at load, so [test/harness.mjs](test/harness.mjs) stubs the handful of browser APIs it uses, imports **the real file**, fires the listeners it registered, and reads back what it rendered. Nothing in the suite reimplements the app's logic, so a check passing means the shipped code works.
@@ -87,7 +87,7 @@ The wasm decoder is fetched from jsDelivr on first load (~1 MB) and warmed up be
 
 A fixed top bar carries the app name and a **⋮** options menu (**Edit Goals**, **Reset Counter**); a click anywhere outside the menu closes it. A fixed bottom nav switches between two tabs:
 
-- **Home** — the Calories and Protein cards, then **Scan Barcode**, **Enter Barcode Manually** and **Add Custom Item**. Nothing else.
+- **Home** — the macro cards you've picked (Calories and Protein by default), then **Scan Barcode**, **Enter Barcode Manually** and **Add Custom Item**. Nothing else.
 - **Log** — Saved Meals (quick-adds) on top, Today's Log below.
 
 Both bars sit outside every view, so they stay put whatever screen you're on. The scan flow (scanning, loading, results, errors) belongs to Home, so that tab stays lit through it.
@@ -99,11 +99,13 @@ Some behaviour to know before you change it:
 - **Leaving the scan flow through the nav cancels it.** Every tab switch goes through `reset()`, which stops the camera and bumps a `flow` counter. A camera start or a lookup that's still awaiting checks the counter when it resumes and drops its result. Without that, a lookup answering after you'd moved to Log would yank you back to results, and a camera permission granted after you left would start scanning behind the Log screen with the camera light on. Tests cover both.
 - **Re-tapping the tab you're on does nothing**, so it can't wipe a half-filled custom-item form.
 - **Edit Goals opens the form on Home**, switching there first if needed, since the goals it edits are on the Home cards.
-- **Carbs and fat are still tracked; only their Home cards are hidden.** Each entry in `MACROS` has an `onHome` flag. The hidden cards are still built and kept current, and carbs and fat are still credited, stored, logged and targeted. The results screen, custom-item form and goals form still show all four. Showing them on Home again means flipping two flags.
+- **Taking a macro off Home only hides its card.** All four are always credited, stored, logged and targeted; the hidden cards are still built and kept current, so ticking one back on shows the right number immediately. The results screen, custom-item form and goals form always show all four. Which cards show is picked in Edit Goals (see below); the `onHome` flags in `MACROS` are only the defaults.
 
 ## Daily counter and goals
 
-The home screen shows running totals for **calories and protein** against daily targets, with a progress bar underneath. Carbs and fat are tracked identically behind the scenes (see above). **Edit Goals** in the ⋮ menu opens an inline form to set your own targets; they're stored in `nutri-scanner-targets` and default to 2000 kcal / 150 g / 250 g / 70 g. Targets are settings, not daily data, so Reset Counter leaves them alone.
+The home screen shows running totals against daily targets, with a progress bar underneath. **Edit Goals** in the ⋮ menu opens an inline form to set your own targets; they're stored in `nutri-scanner-targets` and default to 2000 kcal / 150 g / 250 g / 70 g. Targets are settings, not daily data, so Reset Counter leaves them alone.
+
+The same form has a checkbox beside each macro choosing whether its card shows on Home: Calories and Protein by default, so ticking Carbs and unticking Protein swaps those two cards. The choice is saved with the goals, under `nutri-scanner-home`, and Cancel discards it like it discards goal edits. At least one must stay ticked, since Home with no cards at all is more likely a mis-tap than a wish. Unticked macros keep being tracked, so their goals are still validated on save. A stored list that's corrupt, empty or full of unknown keys falls back to the defaults, and cards always appear in the usual Calories → Protein → Carbs → Fat order.
 
 Bars cap at 100% so an overshoot can't paint outside the track — the card still shows the real number (`30.9 / 30 g`), and a filled bar is outlined to mark the goal as met.
 
@@ -180,7 +182,7 @@ On desktop:
 7. In the console, run `BarcodeDetector.getSupportedFormats = async () => []` **before** the page finishes loading to simulate a Play-Services-less Redmi. The diagnostics line should read `engine: wasm` and scanning should still work. Worth doing deliberately — it's the one failure mode you can't reproduce on a phone that happens to have Play Services.
 8. Add `3017620422003` at 50 g twice → totals read `540 kcal` / `6.2 g`, matching the `270` / `3.1` shown each time.
 9. Refresh the page → totals are still there. ⋮ → Reset Counter → cancel leaves them alone, confirm zeroes them.
-10. Home shows only the Calories and Protein cards and the three buttons. The Log tab shows Saved Meals above Today's Log. The top bar and bottom nav stay fixed while the page scrolls, and nothing sits hidden underneath either one.
+10. Home shows only the Calories and Protein cards and the three buttons. ⋮ → Edit Goals, tick Carbs and untick Protein, Save → Home shows Calories and Carbs, and still does after a refresh. The Log tab shows Saved Meals above Today's Log. The top bar and bottom nav stay fixed while the page scrolls, and nothing sits hidden underneath either one.
 11. Start a scan, then tap **Log** → the camera light goes off and you stay on Log. Do the same during "Looking up…" → you aren't pulled back to the result.
 12. Open ⋮ and tap elsewhere on the page → the menu closes.
 

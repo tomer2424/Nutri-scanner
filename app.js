@@ -22,6 +22,7 @@ const TOTALS_KEY = "nutri-scanner-totals";
 const MEALS_KEY = "nutri-scanner-meals";
 const HISTORY_KEY = "nutri-scanner-history";
 const TARGETS_KEY = "nutri-scanner-targets";
+const HOME_KEY = "nutri-scanner-home";
 const ADDED_FEEDBACK_MS = 800;
 const MAX_MEAL_NAME = 60;
 const MAX_TARGET = 100000;
@@ -31,8 +32,9 @@ const MAX_TARGET = 100000;
 // credited in one place and forgotten in another.
 //   key      — field name in totals / meals / history / targets
 //   source   — matching field on currentValues()
-//   onHome   — whether its card shows on the home screen. A macro without a
-//              card is still credited, stored and targeted exactly the same.
+//   onHome   — whether its card shows on the home screen by default. The user
+//              can change this from Edit Goals. A macro without a card is
+//              still credited, stored and targeted exactly the same.
 const MACROS = [
   { key: "calories", source: "kcal",          label: "Calories", unit: "kcal", decimals: 0, fallback: 2000, onHome: true },
   { key: "protein",  source: "proteins",      label: "Protein",  unit: "g",    decimals: 1, fallback: 150,  onHome: true },
@@ -104,6 +106,7 @@ let product = null;      // cached OFF product, so weight edits never refetch
 let engineLabel = "starting…";
 let totals = zeroTotals();
 let targets = {};
+let shown = [];          // keys of the macros whose cards show on Home
 let meals = [];
 let history = [];
 let addedTimer = null;
@@ -691,6 +694,18 @@ function loadTargets() {
   return loaded;
 }
 
+const defaultShown = () => MACROS.filter((m) => m.onHome).map((m) => m.key);
+
+// Filtered through MACROS, so unknown keys drop out and the cards keep their
+// usual order whatever order was stored. An empty result would leave Home with
+// no cards at all, so it falls back to the defaults.
+function loadShown() {
+  const parsed = readStored(HOME_KEY);
+  if (!Array.isArray(parsed)) return defaultShown();
+  const loaded = MACROS.filter((m) => parsed.includes(m.key)).map((m) => m.key);
+  return loaded.length ? loaded : defaultShown();
+}
+
 function progressPercent(current, target) {
   if (!(target > 0)) return 0;
   return Math.min(100, (current / target) * 100);
@@ -704,9 +719,9 @@ function renderTotals() {
 
     const card = document.createElement("div");
     card.className = "stat";
-    // Built and kept current even when hidden, so showing a macro again is a
-    // one-flag change in MACROS.
-    card.hidden = !macro.onHome;
+    // Built and kept current even when hidden, so ticking a macro back on in
+    // Edit Goals shows the right number straight away.
+    card.hidden = !shown.includes(macro.key);
 
     const value = document.createElement("div");
     value.className = "stat-value";
@@ -1016,6 +1031,7 @@ function submitCustom(event) {
 function renderTargetInputs() {
   for (const macro of MACROS) {
     $(`target-${macro.key}`).value = String(targets[macro.key]);
+    $(`show-${macro.key}`).checked = shown.includes(macro.key);
   }
 }
 
@@ -1037,6 +1053,15 @@ function openTargetsForm() {
 function saveTargets(event) {
   event.preventDefault();
 
+  const nextShown = MACROS.filter((m) => $(`show-${m.key}`).checked).map((m) => m.key);
+  if (nextShown.length === 0) {
+    els.targetsError.textContent = "Pick at least one macro to show on Home.";
+    els.targetsError.hidden = false;
+    $(`show-${MACROS[0].key}`).focus();
+    return;
+  }
+
+  // Unticked macros are still tracked, so their goals are validated too.
   const next = {};
   for (const macro of MACROS) {
     const raw = $(`target-${macro.key}`).value.trim();
@@ -1060,7 +1085,9 @@ function saveTargets(event) {
   // Only commit once every field has passed, so a later failure can't leave
   // half the goals updated.
   targets = next;
+  shown = nextShown;
   writeStored(TARGETS_KEY, targets);
+  writeStored(HOME_KEY, shown);
   closeTargetsForm();
   renderTotals();
 }
@@ -1237,6 +1264,7 @@ if ("serviceWorker" in navigator) {
 }
 
 targets = loadTargets();
+shown = loadShown();
 totals = loadTotals();
 meals = loadMeals();
 history = loadHistory();

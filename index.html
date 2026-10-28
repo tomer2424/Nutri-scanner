@@ -46,23 +46,42 @@
            first for min violations, suppressing our message entirely and
            making behaviour vary by browser and locale. -->
       <form id="targets-form" class="targets-form" novalidate hidden>
+        <p class="hint targets-hint">Tick the macros to show on Home.</p>
+        <!-- The checkbox and the goal are separate controls, so each gets its
+             own label rather than one <label> wrapping both. -->
         <div class="targets-grid">
-          <label class="target-field">
-            <span>Calories (kcal)</span>
-            <input id="target-calories" class="text-input" type="number" inputmode="decimal" min="1" step="any">
-          </label>
-          <label class="target-field">
-            <span>Protein (g)</span>
-            <input id="target-protein" class="text-input" type="number" inputmode="decimal" min="1" step="any">
-          </label>
-          <label class="target-field">
-            <span>Carbs (g)</span>
-            <input id="target-carbs" class="text-input" type="number" inputmode="decimal" min="1" step="any">
-          </label>
-          <label class="target-field">
-            <span>Fat (g)</span>
-            <input id="target-fat" class="text-input" type="number" inputmode="decimal" min="1" step="any">
-          </label>
+          <div class="target-field">
+            <label class="target-show">
+              <input id="show-calories" type="checkbox">
+              <span>Calories (kcal)</span>
+            </label>
+            <input id="target-calories" class="text-input" type="number" inputmode="decimal" min="1" step="any"
+                   aria-label="Calories goal (kcal)">
+          </div>
+          <div class="target-field">
+            <label class="target-show">
+              <input id="show-protein" type="checkbox">
+              <span>Protein (g)</span>
+            </label>
+            <input id="target-protein" class="text-input" type="number" inputmode="decimal" min="1" step="any"
+                   aria-label="Protein goal (g)">
+          </div>
+          <div class="target-field">
+            <label class="target-show">
+              <input id="show-carbs" type="checkbox">
+              <span>Carbs (g)</span>
+            </label>
+            <input id="target-carbs" class="text-input" type="number" inputmode="decimal" min="1" step="any"
+                   aria-label="Carbs goal (g)">
+          </div>
+          <div class="target-field">
+            <label class="target-show">
+              <input id="show-fat" type="checkbox">
+              <span>Fat (g)</span>
+            </label>
+            <input id="target-fat" class="text-input" type="number" inputmode="decimal" min="1" step="any"
+                   aria-label="Fat goal (g)">
+          </div>
         </div>
         <p id="targets-error" class="error-text" role="alert" hidden></p>
         <button class="btn btn-secondary" type="submit">Save Goals</button>

@@ -88,6 +88,19 @@ export function install() {
 
   globalThis.confirm = () => true;
 
+  // A settable clock. app.js only reads the time through `new Date()` and
+  // Date.now(), so swapping the global class is enough. Until setTime() is
+  // called it tells the real time.
+  const RealDate = Date;
+  let fakeNow = null;
+  globalThis.Date = class extends RealDate {
+    constructor(...args) {
+      if (args.length) super(...args);
+      else super(fakeNow ?? RealDate.now());
+    }
+    static now() { return fakeNow ?? RealDate.now(); }
+  };
+
   let version = 0;
 
   // Loading a *copy* with a .mjs extension is deliberate, and the suite is
@@ -143,6 +156,16 @@ export function install() {
      * it after click(id) to model a real tap, which reaches both listeners.
      */
     clickDocument: (id) => documentListeners.click?.({ target: el(id) }),
+    /**
+     * Freezes the clock app.js sees at a local time such as
+     * "2026-10-28T23:59". Pass null to go back to the real time.
+     */
+    setTime: (when) => { fakeNow = when === null ? null : new RealDate(when).getTime(); },
+    /** The user switching back to the app, as the visibilitychange event reports it. */
+    returnToApp() {
+      document.hidden = false;
+      documentListeners.visibilitychange?.();
+    },
     /** Which bottom-nav tab is marked current. */
     activeTab: () => ["home", "log"].filter((t) => el(`tab-${t}`).attrs["aria-current"] === "page").join(),
     /**

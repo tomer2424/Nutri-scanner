@@ -23,6 +23,11 @@ const MEALS_KEY = "nutri-scanner-meals";
 const HISTORY_KEY = "nutri-scanner-history";
 const TARGETS_KEY = "nutri-scanner-targets";
 const HOME_KEY = "nutri-scanner-home";
+const RESET_TIME_KEY = "nutri-scanner-reset-time";
+const DAY_KEY = "nutri-scanner-logical-day";
+const DEFAULT_RESET_TIME = "00:00";
+const RESET_TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
+const DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const ADDED_FEEDBACK_MS = 800;
 const MAX_MEAL_NAME = 60;
 const MAX_TARGET = 100000;
@@ -75,6 +80,11 @@ const els = {
   btnGoalsCancel: $("btn-goals-cancel"),
   targetsForm: $("targets-form"),
   targetsError: $("targets-error"),
+  btnResetTime: $("btn-reset-time"),
+  btnResetTimeCancel: $("btn-reset-time-cancel"),
+  resetTimeForm: $("reset-time-form"),
+  resetTimeInput: $("reset-time"),
+  resetTimeError: $("reset-time-error"),
   btnCustomToggle: $("btn-custom-toggle"),
   customForm: $("custom-form"),
   customName: $("custom-name"),
@@ -107,6 +117,8 @@ let engineLabel = "starting…";
 let totals = zeroTotals();
 let targets = {};
 let shown = [];          // keys of the macros whose cards show on Home
+let resetTime = DEFAULT_RESET_TIME;
+let day = null;          // the logical day the totals and log belong to
 let meals = [];
 let history = [];
 let addedTimer = null;
@@ -774,6 +786,10 @@ function displayed(value, decimals) {
 // item can't be credited without being logged, which is what keeps the log and
 // the totals reconcilable.
 function creditTotals(item) {
+  // A tab left open and on screen never fires visibilitychange, so the reset
+  // time can pass unnoticed. Checking here keeps an item from landing in
+  // yesterday's totals.
+  checkDay();
   for (const macro of MACROS) {
     totals[macro.key] = displayed((totals[macro.key] || 0) + (item[macro.key] || 0), macro.decimals);
   }
@@ -807,14 +823,67 @@ function addToTotal() {
   }, ADDED_FEEDBACK_MS);
 }
 
-function resetCounter() {
-  if (!confirm("Are you sure you want to reset your daily calories and protein counter?")) return;
-  totals = zeroTotals();   // targets are settings, not daily data — left alone
+// Shared by Reset Counter and the automatic daily reset. Saved meals and
+// targets are settings, not daily data, so neither is touched.
+function clearDay() {
+  totals = zeroTotals();
   saveTotals();
   history = [];
   writeStored(HISTORY_KEY, history);
   renderTotals();
   renderHistory();
+}
+
+function resetCounter() {
+  if (!confirm("Are you sure you want to reset your daily calories and protein counter?")) return;
+  clearDay();
+}
+
+// ─────────────────────── automatic daily reset ────────────────
+// The totals and log belong to a "logical day" that starts at the user's reset
+// time rather than at midnight, so 01:00 can still count as yesterday for
+// someone who sets 04:00.
+
+function loadResetTime() {
+  const stored = readStored(RESET_TIME_KEY);
+  return typeof stored === "string" && RESET_TIME_PATTERN.test(stored) ? stored : DEFAULT_RESET_TIME;
+}
+
+function loadDay() {
+  const stored = readStored(DAY_KEY);
+  return typeof stored === "string" && DAY_PATTERN.test(stored) ? stored : null;
+}
+
+// The local calendar date. Not toISOString(): that's UTC, so in Israel it
+// would name the wrong day for the first two or three hours after midnight.
+function dateKey(date) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function logicalDay(now = new Date(), time = resetTime) {
+  const [hours, minutes] = time.split(":").map(Number);
+  if (now.getHours() * 60 + now.getMinutes() >= hours * 60 + minutes) return dateKey(now);
+  // Stepping back a calendar day rather than 24 hours: it rolls over month and
+  // year ends, and a DST change can't skip or repeat a day.
+  return dateKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1));
+}
+
+// Runs at load, whenever the app comes back to the foreground, and after the
+// reset time changes. The day is held in memory like the totals, so in iOS
+// Private Browsing, where writes throw, it still rolls over within a session.
+function checkDay() {
+  const today = logicalDay();
+  // Only a later day clears. No stored day means the first load since this
+  // shipped, and wiping a counter mid-day for that would lose real data. An
+  // earlier day means the clock or the reset time moved back: clearing would
+  // throw away today's entries, so the day is restamped and the next boundary
+  // clears it as usual.
+  if (day !== null && today > day) clearDay();
+  if (today !== day) {
+    day = today;
+    writeStored(DAY_KEY, day);
+  }
 }
 
 // ────────────────────── saved quick-add meals ─────────────────
@@ -1044,6 +1113,7 @@ function closeTargetsForm() {
 // goals shown on the Home cards, so it opens there.
 function openTargetsForm() {
   if (view !== "home") reset();
+  closeResetTimeForm();
   els.targetsForm.hidden = false;
   els.targetsError.hidden = true;
   renderTargetInputs();              // always opens showing what's actually saved
@@ -1090,6 +1160,53 @@ function saveTargets(event) {
   writeStored(HOME_KEY, shown);
   closeTargetsForm();
   renderTotals();
+}
+
+// ───────────────────────── reset time ─────────────────────────
+
+function closeResetTimeForm() {
+  els.resetTimeForm.hidden = true;
+  els.resetTimeError.hidden = true;
+}
+
+// Opens on Home, beside the goals form, for the same reason: it's reached from
+// the options menu on every screen and changes what the Home cards show.
+function openResetTimeForm() {
+  if (view !== "home") reset();
+  closeTargetsForm();
+  els.resetTimeForm.hidden = false;
+  els.resetTimeError.hidden = true;
+  els.resetTimeInput.value = resetTime;
+  els.resetTimeInput.focus();
+}
+
+function saveResetTime(event) {
+  event.preventDefault();
+
+  // A time input yields "HH:MM", or "HH:MM:SS" in some browsers; seconds are
+  // dropped either way.
+  const value = els.resetTimeInput.value.trim().slice(0, 5);
+  if (!RESET_TIME_PATTERN.test(value)) {
+    els.resetTimeError.textContent = "Pick a time for the new day to start.";
+    els.resetTimeError.hidden = false;
+    els.resetTimeInput.focus();
+    return;
+  }
+
+  // An earlier time can mean the new day has already begun, which clears the
+  // counter on save. Ask first, unless there's nothing logged to lose.
+  const clearsNow = day !== null && logicalDay(new Date(), value) > day;
+  const hasData = history.length > 0 || MACROS.some((macro) => totals[macro.key] > 0);
+  if (clearsNow && hasData
+      && !confirm(`With the day starting at ${value}, a new day has already begun. Saving will clear today's totals and log. Continue?`)) {
+    closeResetTimeForm();   // cancelling discards the new time
+    return;
+  }
+
+  resetTime = value;
+  writeStored(RESET_TIME_KEY, resetTime);
+  closeResetTimeForm();
+  checkDay();
 }
 
 // ──────────────────────── today's log ─────────────────────────
@@ -1178,6 +1295,7 @@ function reset(target = "home") {
   els.manualForm.hidden = true;
   els.btnManualToggle.setAttribute("aria-expanded", "false");
   closeTargetsForm();
+  closeResetTimeForm();
   closeCustomForm();
   clearCustomForm();
   els.headline.replaceChildren();
@@ -1217,6 +1335,9 @@ els.btnResetCounter.addEventListener("click", () => { closeMenu(); resetCounter(
 els.btnEditGoals.addEventListener("click", () => { closeMenu(); openTargetsForm(); });
 els.btnGoalsCancel.addEventListener("click", closeTargetsForm);
 els.targetsForm.addEventListener("submit", saveTargets);
+els.btnResetTime.addEventListener("click", () => { closeMenu(); openResetTimeForm(); });
+els.btnResetTimeCancel.addEventListener("click", closeResetTimeForm);
+els.resetTimeForm.addEventListener("submit", saveResetTime);
 
 for (const tab of TABS) $(`tab-${tab}`).addEventListener("click", () => openTab(tab));
 
@@ -1254,9 +1375,14 @@ els.manualForm.addEventListener("submit", (event) => {
   lookUp(code);
 });
 
-// Don't leave the camera indicator on when the page is backgrounded.
+// Don't leave the camera indicator on when the page is backgrounded. Coming
+// back is when a phone user is most likely to have crossed the reset time.
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden && scanning) reset();
+  if (document.hidden) {
+    if (scanning) reset();
+  } else {
+    checkDay();
+  }
 });
 
 if ("serviceWorker" in navigator) {
@@ -1268,9 +1394,13 @@ shown = loadShown();
 totals = loadTotals();
 meals = loadMeals();
 history = loadHistory();
+resetTime = loadResetTime();
+day = loadDay();
+checkDay();
 // The markup ships these hidden; own that state in code too.
 closeMenu();
 closeTargetsForm();
+closeResetTimeForm();
 closeCustomForm();
 renderTotals();
 renderMeals();

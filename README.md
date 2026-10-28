@@ -18,8 +18,8 @@ python -m http.server 8000
 ## Tests
 
 ```bash
-node test/run.mjs             # 223 checks, including the live API contract
-node test/run.mjs --offline   # 219 checks, no network needed
+node test/run.mjs             # 270 checks, including the live API contract
+node test/run.mjs --offline   # 266 checks, no network needed
 ```
 
 No dependencies and no test framework — just Node. `app.js` exports nothing and touches the DOM at load, so [test/harness.mjs](test/harness.mjs) stubs the handful of browser APIs it uses, imports **the real file**, fires the listeners it registered, and reads back what it rendered. Nothing in the suite reimplements the app's logic, so a check passing means the shipped code works.
@@ -85,7 +85,7 @@ The wasm decoder is fetched from jsDelivr on first load (~1 MB) and warmed up be
 
 ## Layout and navigation
 
-A fixed top bar carries the app name and a **⋮** options menu (**Edit Goals**, **Reset Counter**); a click anywhere outside the menu closes it. A fixed bottom nav switches between two tabs:
+A fixed top bar carries the app name and a **⋮** options menu (**Edit Goals**, **Set Reset Time**, **Reset Counter**); a click anywhere outside the menu closes it. A fixed bottom nav switches between two tabs:
 
 - **Home** — the macro cards you've picked (Calories and Protein by default), then **Scan Barcode**, **Enter Barcode Manually** and **Add Custom Item**. Nothing else.
 - **Log** — Saved Meals (quick-adds) on top, Today's Log below.
@@ -98,7 +98,7 @@ Some behaviour to know before you change it:
 
 - **Leaving the scan flow through the nav cancels it.** Every tab switch goes through `reset()`, which stops the camera and bumps a `flow` counter. A camera start or a lookup that's still awaiting checks the counter when it resumes and drops its result. Without that, a lookup answering after you'd moved to Log would yank you back to results, and a camera permission granted after you left would start scanning behind the Log screen with the camera light on. Tests cover both.
 - **Re-tapping the tab you're on does nothing**, so it can't wipe a half-filled custom-item form.
-- **Edit Goals opens the form on Home**, switching there first if needed, since the goals it edits are on the Home cards.
+- **Edit Goals and Set Reset Time open their forms on Home**, switching there first if needed, since both change what the Home cards show. Only one of the two is open at a time.
 - **Taking a macro off Home only hides its card.** All four are always credited, stored, logged and targeted; the hidden cards are still built and kept current, so ticking one back on shows the right number immediately. The results screen, custom-item form and goals form always show all four. Which cards show is picked in Edit Goals (see below); the `onHome` flags in `MACROS` are only the defaults.
 
 ## Daily counter and goals
@@ -136,11 +136,27 @@ Every item credited to the counter — from a scan, a quick-add or a custom item
 
 The log is written inside `creditTotals()`, the single function both add routes call, so an item cannot be credited without being logged. That's what makes the two reconcilable, and a test asserts the counter always equals the sum of the log — including after a delete.
 
-- **"Today" means "since you last reset"**, same as the counter. There's no midnight rollover, deliberately. Reset Counter clears the totals and the log together.
+- **"Today" means the current logical day**, same as the counter: it clears automatically at the reset time (see below), or whenever you use Reset Counter. Both clear the totals and the log together.
 - **Subtraction clamps at zero.** The counter is a running sum of rounded values, so a long sequence of adds and deletes shouldn't be able to leave a stray `-0.1` on screen.
 - **The list isn't capped.** It used to scroll inside a ~210px box so it couldn't push the scan button off-screen. Now that it has its own tab, the page just scrolls.
 
 Stored under `nutri-scanner-history`, with the same validation and iOS Private Browsing guards as the other two keys.
+
+## Automatic daily reset
+
+The totals and Today's Log clear by themselves when a new **logical day** begins. That's midnight by default; **⋮ → Set Reset Time** changes it (e.g. `04:00` for someone who stays up late, so 01:00 still counts as the day before). Saved meals, goals and the Home macro choice are never touched.
+
+- **When it checks:** on page load, whenever the app comes back to the foreground (`visibilitychange`), and at the top of `creditTotals()`, just before any item is added. That last one is for a tab left open on screen across the reset time, which never fires `visibilitychange`; without it, the first item of the new day would land in yesterday's totals. Scan, quick-add and custom item all pass through `creditTotals()`, so one check covers all three, and a test drives each.
+- **Stored** as `nutri-scanner-reset-time` (`"HH:MM"`) and `nutri-scanner-logical-day` (`"YYYY-MM-DD"`). A bad stored time falls back to `00:00`.
+- **Local dates, not UTC.** The day is built from `getFullYear()`/`getMonth()`/`getDate()`. `toISOString()` would name the wrong day for the first two or three hours after midnight in Israel.
+- **Only a later day clears.** Three cases deliberately don't:
+  - *No stored day*, which is the first load after this feature shipped. It records today instead of wiping a counter mid-day.
+  - *A day earlier than the stored one*, from a clock moved back or the reset time moved later. Clearing would throw away what's logged today, so the earlier day is recorded and the next boundary clears as usual. Moving 00:00 → 04:00 at 02:00 keeps the counter and clears it at 04:00.
+  - *A corrupt stored day*, which is treated as missing.
+- **Moving the reset time earlier can clear at once, so it asks first.** At 02:00 with a 04:00 reset, today is still yesterday; saving 01:00 starts the new day. If anything is logged, a `confirm()` warns that saving will clear it; cancelling closes the form and discards the new time. With nothing logged there's nothing to lose, so it saves without asking. Moving the time later never asks, since it never clears.
+- **Held in memory like the totals**, so in iOS Private Browsing, where writes throw, the day still rolls over within a session.
+
+The test harness swaps the global `Date` for one with a settable clock (`setTime()`), and `returnToApp()` fires the `visibilitychange` listener, so the suite can step across a boundary without waiting for one.
 
 ## Saved quick-add meals
 
@@ -185,6 +201,7 @@ On desktop:
 10. Home shows only the Calories and Protein cards and the three buttons. ⋮ → Edit Goals, tick Carbs and untick Protein, Save → Home shows Calories and Carbs, and still does after a refresh. The Log tab shows Saved Meals above Today's Log. The top bar and bottom nav stay fixed while the page scrolls, and nothing sits hidden underneath either one.
 11. Start a scan, then tap **Log** → the camera light goes off and you stay on Log. Do the same during "Looking up…" → you aren't pulled back to the result.
 12. Open ⋮ and tap elsewhere on the page → the menu closes.
+13. Log something, then ⋮ → Set Reset Time to a minute or two from now. Background the app, wait past that time, come back → totals and the log are cleared, and saved meals and goals are still there. Set it back to `00:00` afterwards.
 
 On both phones:
 

@@ -27,6 +27,7 @@
 
     <div id="options-menu" class="options-menu" role="menu" hidden>
       <button id="btn-edit-goals" class="menu-item" type="button" role="menuitem">Edit Goals</button>
+      <button id="btn-reset-time" class="menu-item" type="button" role="menuitem">Set Reset Time</button>
       <button id="btn-reset-counter" class="menu-item" type="button" role="menuitem">Reset Counter</button>
     </div>
   </div>
@@ -86,6 +87,17 @@
         <p id="targets-error" class="error-text" role="alert" hidden></p>
         <button class="btn btn-secondary" type="submit">Save Goals</button>
         <button id="btn-goals-cancel" class="btn btn-link" type="button">Cancel</button>
+      </form>
+
+      <form id="reset-time-form" class="targets-form" novalidate hidden>
+        <label class="target-field">
+          <span>New day starts at</span>
+          <input id="reset-time" class="text-input" type="time">
+        </label>
+        <p class="hint targets-hint">Your totals and today's log clear automatically at this time. Saved meals and goals are kept.</p>
+        <p id="reset-time-error" class="error-text" role="alert" hidden></p>
+        <button class="btn btn-secondary" type="submit">Save Reset Time</button>
+        <button id="btn-reset-time-cancel" class="btn btn-link" type="button">Cancel</button>
       </form>
     </div>
 

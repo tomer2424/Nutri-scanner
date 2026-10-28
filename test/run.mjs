@@ -998,6 +998,243 @@ check("unparseable targets fall back to the defaults",
 app.store.delete(TARGETS_KEY);
 await clearAll();
 
+// ───────────────────── automatic daily reset ──────────────────────────
+
+section("automatic daily reset");
+
+const RESET_TIME_KEY = "nutri-scanner-reset-time";
+const DAY_KEY = "nutri-scanner-logical-day";
+const storedDay = () => stored(DAY_KEY);
+
+// Seeding storage rather than scanning: what's under test is the clearing, and
+// a day's worth of data is the same to it however it got there.
+const seedDay = (logicalDay) => {
+  app.store.set(TOTALS_KEY, JSON.stringify({ calories: 270, protein: 3.1, carbs: 28.8, fat: 15.4 }));
+  app.store.set(HISTORY_KEY, JSON.stringify([
+    { id: 1, name: "Nutella", weight: 50, calories: 270, protein: 3.1, carbs: 28.8, fat: 15.4, timestamp: 1 },
+  ]));
+  if (logicalDay) app.store.set(DAY_KEY, JSON.stringify(logicalDay));
+  else app.store.delete(DAY_KEY);
+};
+const kept = () => app.macros() === "270 / 3.1 / 28.8 / 15.4" && storedHistory().length === 1 && logLabels().length === 1;
+const cleared = () => app.macros() === "0 / 0 / 0 / 0" && storedHistory().length === 0 && logLabels().length === 0
+  && stored(TOTALS_KEY)?.calories === 0;
+const dayState = () => `${app.macros()}, ${storedHistory().length} logged, day ${storedDay()}`;
+
+app.store.set(MEALS_KEY, JSON.stringify([{ id: 9, name: "Kept Meal", weight: 50, calories: 270, protein: 3.1, carbs: 28.8, fat: 15.4 }]));
+app.store.set(TARGETS_KEY, JSON.stringify({ calories: 1800, protein: 140, carbs: 200, fat: 60 }));
+const settings = () => [MEALS_KEY, TARGETS_KEY].map((key) => app.store.get(key)).join();
+const settingsBefore = settings();
+
+// ── default: midnight ──
+
+app.setTime("2026-10-28T10:00");
+seedDay(null);
+await app.loadApp();
+check("the first load with no stored day keeps the counter", kept(), dayState());
+check("and records today as the logical day", storedDay() === "2026-10-28", storedDay());
+
+app.setTime("2026-10-28T23:59");
+app.returnToApp();
+check("23:59 is still the same day", kept(), dayState());
+
+app.setTime("2026-10-29T00:00");
+app.returnToApp();
+check("returning to the app after midnight clears the totals and the log", cleared(), dayState());
+check("and moves the logical day on", storedDay() === "2026-10-29", storedDay());
+check("saved meals and targets survive the auto-reset", settings() === settingsBefore, settings());
+check("the cards show the cleared totals against the kept targets",
+      app.cards()[0].startsWith("0 / 1800 kcal"), app.cards()[0]);
+
+seedDay("2026-10-29");
+app.setTime("2026-10-30T08:00");
+await app.loadApp();
+check("opening the app the next morning clears too", cleared(), dayState());
+
+seedDay("2026-10-30");
+app.setTime("2026-10-29T12:00");
+await app.loadApp();
+check("a clock that has gone backwards doesn't clear", kept(), dayState());
+check("it restamps the earlier day instead", storedDay() === "2026-10-29", storedDay());
+
+// ── a custom reset time ──
+
+app.store.set(RESET_TIME_KEY, JSON.stringify("04:00"));
+seedDay("2026-10-28");
+app.setTime("2026-10-29T03:59");
+await app.loadApp();
+check("with 04:00 set, 03:59 still belongs to the previous day", kept(), dayState());
+check("so the logical day is unchanged", storedDay() === "2026-10-28", storedDay());
+
+app.setTime("2026-10-29T04:00");
+app.returnToApp();
+check("04:00 clears the counter", cleared(), dayState());
+check("and starts the new logical day", storedDay() === "2026-10-29", storedDay());
+check("saved meals and targets survive a custom-time reset too", settings() === settingsBefore, settings());
+
+seedDay("2026-12-31");
+app.setTime("2027-01-01T02:00");
+await app.loadApp();
+check("before the reset time on New Year's Day, the day is still December 31", kept() && storedDay() === "2026-12-31", dayState());
+
+// ── changing the reset time ──
+
+seedDay("2026-10-28");
+app.setTime("2026-10-29T02:00");   // reset time still 04:00, so still the 28th
+await app.loadApp();
+check("Set Reset Time starts with the menu closed", app.el("reset-time-form").hidden === true);
+app.click("btn-options");
+app.click("btn-reset-time");
+app.clickDocument("btn-reset-time");
+check("Set Reset Time closes the menu", app.el("options-menu").hidden === true);
+check("and opens the form pre-filled with the saved time",
+      app.el("reset-time-form").hidden === false && app.el("reset-time").value === "04:00",
+      app.el("reset-time").value);
+
+app.el("reset-time").value = "";
+app.el("reset-time-form").listeners.submit({ preventDefault() {} });
+check("an empty time is rejected", !app.el("reset-time-error").hidden && app.el("reset-time-form").hidden === false,
+      app.el("reset-time-error").textContent);
+check("and changes nothing", stored(RESET_TIME_KEY) === "04:00" && kept(), dayState());
+
+app.el("reset-time").value = "01:00";
+app.click("btn-reset-time-cancel");
+check("Cancel closes the form and saves nothing", app.el("reset-time-form").hidden === true
+      && stored(RESET_TIME_KEY) === "04:00" && kept(), dayState());
+
+let confirms = [];
+const answerConfirm = (answer) => {
+  confirms = [];
+  globalThis.confirm = (message) => { confirms.push(message); return answer; };
+};
+const submitResetTime = (value) => {
+  app.click("btn-reset-time");
+  app.el("reset-time").value = value;
+  app.el("reset-time-form").listeners.submit({ preventDefault() {} });
+};
+
+answerConfirm(false);
+submitResetTime("01:00");
+check("a reset time that would clear now asks first",
+      confirms.length === 1 && /clear today's totals and log/.test(confirms[0]), confirms.join(" | "));
+check("cancelling keeps the counter, the old time and the day",
+      kept() && stored(RESET_TIME_KEY) === "04:00" && storedDay() === "2026-10-28",
+      `${dayState()}, time ${stored(RESET_TIME_KEY)}`);
+check("and closes the form", app.el("reset-time-form").hidden === true);
+app.click("btn-reset-time");
+check("reopening shows the saved time, not the discarded one", app.el("reset-time").value === "04:00",
+      app.el("reset-time").value);
+app.click("btn-reset-time-cancel");
+
+answerConfirm(true);
+submitResetTime("01:00");
+check("confirming clears at once", confirms.length === 1 && cleared(), dayState());
+check("and stores the new time and day", stored(RESET_TIME_KEY) === "01:00" && storedDay() === "2026-10-29",
+      `${stored(RESET_TIME_KEY)}, ${storedDay()}`);
+check("saving closes the form", app.el("reset-time-form").hidden === true);
+
+seedDay("2026-10-29");
+await app.loadApp();
+answerConfirm(true);
+submitResetTime("04:00:00");   // some browsers include seconds
+check("moving the reset time later doesn't ask", confirms.length === 0, confirms.join(" | "));
+check("moving the reset time later doesn't clear what's already logged", kept(), dayState());
+check("it steps the logical day back instead", stored(RESET_TIME_KEY) === "04:00" && storedDay() === "2026-10-28",
+      `${stored(RESET_TIME_KEY)}, ${storedDay()}`);
+app.setTime("2026-10-29T04:00");
+app.returnToApp();
+check("so the new reset time is the next boundary", cleared(), dayState());
+
+app.setTime("2026-10-30T02:00");   // still the 29th with 04:00, and nothing logged
+answerConfirm(true);
+submitResetTime("01:00");
+check("starting a new day with nothing logged doesn't ask", confirms.length === 0, confirms.join(" | "));
+check("but still moves the day on", storedDay() === "2026-10-30", storedDay());
+globalThis.confirm = () => true;
+
+// ── a tab left open across the reset time ──
+// No returnToApp() here: a tab left on screen never fires visibilitychange, so
+// each add route has to notice the new day itself.
+
+seedDay("2026-10-30");
+app.setTime("2026-10-30T12:00");
+await app.loadApp();
+app.setTime("2026-10-31T01:00");
+await app.lookup(NUTELLA_BARCODE, 100);
+app.click("btn-add-total");
+check("a scan added after the reset time starts the new day",
+      app.macros() === "539 / 6.3 / 57.5 / 30.9" && storedHistory().length === 1 && storedDay() === "2026-10-31",
+      dayState());
+await wait(1200);
+
+seedDay("2026-10-31");
+app.setTime("2026-10-31T12:00");
+await app.loadApp();
+app.setTime("2026-11-01T01:30");
+app.click("tab-log");
+tapMeal(0);
+check("so does a quick-add",
+      storedHistory().length === 1 && storedHistory()[0].name === "Kept Meal" && storedDay() === "2026-11-01",
+      dayState());
+await wait(1200);
+
+seedDay("2026-11-01");
+app.setTime("2026-11-01T12:00");
+await app.loadApp();
+app.setTime("2026-11-02T01:30");
+app.click("btn-custom-toggle");
+app.el("custom-name").value = "Soup";
+app.el("custom-calories").value = "100";
+app.el("custom-form").listeners.submit({ preventDefault() {} });
+check("and so does a custom item",
+      app.macros() === "100 / 0 / 0 / 0" && storedHistory().length === 1 && storedDay() === "2026-11-02",
+      dayState());
+await wait(1200);
+
+seedDay("2026-11-02");
+app.setTime("2026-11-02T12:00");
+await app.loadApp();
+await app.lookup(NUTELLA_BARCODE, 100);
+app.click("btn-add-total");
+check("an add on the same day still accumulates",
+      app.macros() === "809 / 9.4 / 86.3 / 46.3" && storedHistory().length === 2, dayState());
+await wait(1200);
+
+// ── the two settings forms ──
+
+app.click("btn-reset-time");
+app.click("btn-edit-goals");
+check("opening Edit Goals closes the reset time form",
+      app.el("reset-time-form").hidden === true && app.el("targets-form").hidden === false);
+app.click("btn-reset-time");
+check("and the reverse", app.el("reset-time-form").hidden === false && app.el("targets-form").hidden === true);
+app.click("tab-log");
+check("leaving Home closes it", app.el("reset-time-form").hidden === true);
+app.click("btn-reset-time");
+check("and it opens on Home from any tab", app.visible().join() === "home" && app.el("reset-time-form").hidden === false,
+      app.visible().join());
+app.click("btn-reset-time-cancel");
+
+// ── corrupt stored values ──
+
+for (const [bad, why] of [['"25:00"', "an impossible time"], ["4", "a number"], ["not json", "unparseable"]]) {
+  app.store.set(RESET_TIME_KEY, bad);
+  await app.loadApp();
+  app.click("btn-reset-time");
+  check(`a stored reset time that is ${why} falls back to midnight`, app.el("reset-time").value === "00:00",
+        app.el("reset-time").value);
+  app.click("btn-reset-time-cancel");
+}
+
+seedDay(null);
+app.store.set(DAY_KEY, JSON.stringify("yesterday"));
+await app.loadApp();
+check("a corrupt stored day is treated as missing, so nothing is cleared", kept(), dayState());
+
+app.setTime(null);
+for (const key of [RESET_TIME_KEY, DAY_KEY, MEALS_KEY, TARGETS_KEY]) app.store.delete(key);
+await clearAll();
+
 // ───────────────────── custom manual entry ────────────────────────────
 
 section("custom manual entry");

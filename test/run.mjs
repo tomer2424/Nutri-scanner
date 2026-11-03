@@ -1692,6 +1692,11 @@ await app.lookup(NUTELLA_BARCODE, 100);
 app.click("btn-save-meal");
 app.click("btn-reset");
 app.click("tab-log");
+// Ids are timestamps. Adding in the same millisecond as saving would make the
+// two equal by coincidence, so the id check below would fail on a fast machine
+// (it did, in CI). A short gap keeps it testing the actual bug: a log entry
+// that inherits the meal's id matches it however much time has passed.
+await wait(5);
 tapMeal(0);
 await wait(1200);
 check("a quick-add's log entry is editable too",

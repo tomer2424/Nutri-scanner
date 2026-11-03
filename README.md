@@ -18,8 +18,8 @@ python -m http.server 8000
 ## Tests
 
 ```bash
-node test/run.mjs             # 364 checks, including the live API contract
-node test/run.mjs --offline   # 360 checks, no network needed
+node test/run.mjs             # 369 checks, including the live API contract
+node test/run.mjs --offline   # 365 checks, no network needed
 ```
 
 No dependencies and no test framework — just Node. `app.js` exports nothing and touches the DOM at load, so [test/harness.mjs](test/harness.mjs) stubs the handful of browser APIs it uses, imports **the real file**, fires the listeners it registered, and reads back what it rendered. Nothing in the suite reimplements the app's logic, so a check passing means the shipped code works.
@@ -111,7 +111,7 @@ Bars cap at 100% so an overshoot can't paint outside the track — the card stil
 
 The four metrics are declared once in a `MACROS` list in [app.js](app.js), and totals, saved meals, log entries, targets and the cards all iterate it. That's deliberate: with four metrics hand-written in five places, crediting one and forgetting another is the obvious bug, and this makes it unexpressible.
 
-Scanning starts straight from the home screen; the weight is entered on the results screen once the product is identified. It defaults to **100 g** — the label basis, so the first numbers you see match the pack — and every figure recalculates as you type, from the cached product with no refetch. An empty, zero, negative or over-10 000 g value shows an inline error, blanks the figures to `—`, and disables Add and Save; the handlers check too, so the disabled state isn't the only guard.
+Scanning starts straight from the home screen; the weight is entered on the results screen once the product is identified. It defaults to **100 g** — the label basis, so the first numbers you see match the pack — and every figure recalculates as you type, from the cached product with no refetch. The first tap into the field selects the whole number, so typing replaces it instead of adding to it; a second tap places the cursor as usual, for changing one digit. The log's weight editor opens with its number selected too. An empty, zero, negative or over-10 000 g value shows an inline error, blanks the figures to `—`, and disables Add and Save; the handlers check too, so the disabled state isn't the only guard.
 
 On a results screen, **Add to Daily Total** adds the current item at the entered weight and returns you home with the totals updated. Totals are kept in `localStorage`, so they survive refreshes and relaunching the installed app.
 

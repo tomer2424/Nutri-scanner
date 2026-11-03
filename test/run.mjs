@@ -1745,6 +1745,51 @@ app.setTime(null);
 
 await clearAll();
 
+// ──────────────────────── selecting the weight ────────────────────────
+// The first tap into a weight field selects the number, so typing replaces it.
+
+section("selecting the weight");
+
+// A tap as the browser delivers it: pointerdown (before focus moves), focus if
+// it wasn't focused already, then click.
+const tapField = (field) => {
+  field.selected = false;
+  field.listeners.pointerdown();
+  if (document.activeElement !== field) {
+    document.activeElement = field;
+    field.listeners.focus();
+  }
+  field.listeners.click();
+};
+
+await app.lookup(NUTELLA_BARCODE);
+const weightField = app.el("weight-results");
+document.activeElement = null;
+tapField(weightField);
+check("tapping the results weight selects the whole number", weightField.selected);
+
+weightField.selected = false;
+weightField.listeners.pointerdown();
+weightField.listeners.click();
+check("a second tap into the focused field leaves the caret alone", !weightField.selected);
+
+document.activeElement = null;
+weightField.selected = false;
+weightField.listeners.focus();
+check("focusing it from the keyboard selects it too", weightField.selected);
+
+app.click("btn-add-total");
+await wait(1200);
+app.click("tab-log");
+tapLogLabel(0);
+check("the log editor opens with the weight already selected", app.el("log-edit-weight").selected);
+document.activeElement = null;
+tapField(app.el("log-edit-weight"));
+check("and tapping its field selects it as well", app.el("log-edit-weight").selected);
+
+document.activeElement = null;
+await clearAll();
+
 // ──────────────────────── live API contract ───────────────────────────
 // Values aren't asserted — only that the response still has the shape app.js
 // reads. This is what would break silently if Open Food Facts changed its API.

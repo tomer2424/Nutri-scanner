@@ -614,6 +614,19 @@ function readWeight() {
   return validWeight(els.weightResults.value);
 }
 
+// The first tap into a weight field selects the whole number, so typing
+// replaces it rather than appending to it. Selecting on focus alone doesn't
+// hold: the pointer's release lands after focus and drops a caret where it
+// was tapped. So a tap that focuses the field selects again on click, while a
+// second tap into an already-focused field places the caret as usual, for
+// editing a single digit.
+function selectAllOnTap(input) {
+  let alreadyFocused = false;
+  input.addEventListener("pointerdown", () => { alreadyFocused = document.activeElement === input; });
+  input.addEventListener("focus", () => input.select());
+  input.addEventListener("click", () => { if (!alreadyFocused) input.select(); });
+}
+
 // Every scaled number the results screen shows comes from here, and so does
 // every number "Add to Daily Total" adds. One source of truth, so the total can
 // never drift from what was on screen. Null for an invalid weight, which is
@@ -1499,6 +1512,7 @@ function editRow(entry) {
   input.step = "any";
   input.value = String(entry.weight);
   input.setAttribute("aria-label", "Weight in grams");
+  selectAllOnTap(input);   // also selects when the editor opens focused
 
   const error = document.createElement("p");
   error.id = "log-edit-error";
@@ -1660,6 +1674,7 @@ els.btnCustomToggle.addEventListener("click", toggleCustomForm);
 els.customForm.addEventListener("submit", submitCustom);
 
 els.weightResults.addEventListener("input", renderNutrition);
+selectAllOnTap(els.weightResults);
 
 els.btnManualToggle.addEventListener("click", () => {
   const nowHidden = !els.manualForm.hidden;

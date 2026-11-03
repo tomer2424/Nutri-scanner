@@ -41,7 +41,9 @@ function makeElement(id, register) {
     // Only knows about children added from code: elements from the markup
     // are separate stubs with no parent link.
     contains(other) { return other === this || this.children.some((kid) => kid.contains(other)); },
-    focus() {},
+    focus() { this.listeners.focus?.(); },
+    selected: false,
+    select() { this.selected = true; },
     play() { return Promise.resolve(); },
     getContext() { return { drawImage() {} }; },
   };
@@ -74,6 +76,7 @@ export function install() {
   const documentListeners = {};
   globalThis.document = {
     hidden: false,
+    activeElement: null,
     getElementById: el,
     createElement: () => makeElement(undefined, register),
     addEventListener(type, fn) { documentListeners[type] = fn; },

@@ -119,9 +119,9 @@ On a results screen, **Add to Daily Total** adds the current item at the entered
 
 The goals form carries `novalidate` on purpose. The app does its own validation with specific inline messages; without it the browser's native constraint check fires first on `min` violations and suppresses ours, which also made the browser and the test suite exercise different paths.
 
-**There is no midnight rollover.** Totals run until you press **Reset Counter** (which asks for confirmation first), however many days that spans — so "daily" is your discipline, not the app's. This is deliberate, not an oversight.
+Totals clear by themselves at the start of each logical day (see [Automatic daily reset](#automatic-daily-reset)), or whenever you press **Reset Counter**, which asks for confirmation first.
 
-There's no undo either: a mis-tap can only be cleared by resetting the whole counter. The Add button returns straight home, so a double-tap can't land twice.
+A mis-tap is undone by removing that entry from Today's Log. The Add button returns straight home, so a double-tap can't land twice.
 
 Two details worth knowing:
 
@@ -132,7 +132,7 @@ In iOS Safari Private Browsing, `localStorage` writes throw. The counter still w
 
 ## Today's log
 
-Every item credited to the counter — from a scan, a quick-add or a custom item — is logged under **Today's Log** on the Log tab, newest first. The `✕` beside an entry removes it *and* subtracts its calories and protein back out of the counter.
+Every item credited to the counter — from a scan, a quick-add or a custom item — is logged under **Today's Log** on the Log tab, newest first. The `✕` beside an entry removes it *and* subtracts all four of its macros back out of the counter.
 
 The log is written inside `creditTotals()`, the single function both add routes call, so an item cannot be credited without being logged. That's what makes the two reconcilable, and a test asserts the counter always equals the sum of the log — including after a delete.
 

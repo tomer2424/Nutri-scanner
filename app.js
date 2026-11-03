@@ -651,8 +651,8 @@ function renderNutrition() {
 }
 
 // ────────────────────── daily counter ─────────────────────────
-// Totals run until you press Reset Counter — there is no midnight rollover, so
-// "daily" is the user's discipline rather than the app's.
+// Totals run until the logical day ends (see checkDay) or the user presses
+// Reset Counter.
 
 function readStored(key) {
   try {
@@ -835,7 +835,7 @@ function clearDay() {
 }
 
 function resetCounter() {
-  if (!confirm("Are you sure you want to reset your daily calories and protein counter?")) return;
+  if (!confirm("Are you sure you want to reset today's totals and log?")) return;
   clearDay();
 }
 

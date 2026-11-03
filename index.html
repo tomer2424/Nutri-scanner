@@ -207,6 +207,8 @@
     <button id="btn-add-total" class="btn btn-primary" type="button">Add to Daily Total</button>
     <button id="btn-save-meal" class="btn btn-secondary" type="button">Save as Quick Add</button>
     <button id="btn-reset" class="btn btn-secondary" type="button">Scan Another Product</button>
+    <!-- Only for a product the user taught, so a typo in it isn't permanent. -->
+    <button id="btn-fix-product" class="btn btn-link" type="button" hidden>Fix Product Details</button>
   </section>
 
   <!-- ──────────── ERROR ───────────── -->
@@ -215,7 +217,49 @@
       <p id="error-message" role="alert"></p>
       <p id="error-detail" class="error-detail" hidden></p>
     </div>
+    <!-- Shown only for "not found" and "no nutrition data", never for a network
+         or camera fault. -->
+    <button id="btn-teach" class="btn btn-primary" type="button" hidden>Add Product Details</button>
     <button id="btn-error-reset" class="btn btn-primary" type="button">Scan Another Product</button>
+  </section>
+
+  <!-- ──────────── TEACH ───────────── -->
+  <!-- Part of the scan flow, so the Home tab stays lit. novalidate for the same
+       reason as the other forms: the app shows its own inline messages. -->
+  <section id="view-teach" class="view" hidden>
+    <form id="teach-form" class="custom-form" novalidate>
+      <div>
+        <h2 id="teach-title" class="product-name">Add Product Details</h2>
+        <p id="teach-barcode" class="product-barcode"></p>
+      </div>
+
+      <input id="teach-name" class="text-input" type="text" autocomplete="off"
+             maxlength="60" placeholder="Product name" aria-label="Product name">
+
+      <p class="hint targets-hint">Per 100 g, as printed on the label.</p>
+      <div class="targets-grid">
+        <label class="target-field">
+          <span>Calories (kcal)</span>
+          <input id="teach-calories" class="text-input" type="number" inputmode="decimal" min="0" step="any">
+        </label>
+        <label class="target-field">
+          <span>Protein (g)</span>
+          <input id="teach-protein" class="text-input" type="number" inputmode="decimal" min="0" step="any" placeholder="0">
+        </label>
+        <label class="target-field">
+          <span>Carbs (g)</span>
+          <input id="teach-carbs" class="text-input" type="number" inputmode="decimal" min="0" step="any" placeholder="0">
+        </label>
+        <label class="target-field">
+          <span>Fat (g)</span>
+          <input id="teach-fat" class="text-input" type="number" inputmode="decimal" min="0" step="any" placeholder="0">
+        </label>
+      </div>
+
+      <p id="teach-error" class="error-text" role="alert" hidden></p>
+      <button class="btn btn-primary" type="submit">Save Product</button>
+      <button id="btn-teach-cancel" class="btn btn-link" type="button">Cancel</button>
+    </form>
   </section>
 
   <p id="diagnostics" class="diagnostics">engine: starting…</p>

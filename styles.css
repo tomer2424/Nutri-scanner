@@ -370,6 +370,36 @@ body {
   line-height: 1.3;
 }
 
+/* A row whose weight can be edited: the label is a button that looks like the
+   plain text beside it, with a pencil as the only cue. */
+.log-edit {
+  padding: 4px 0;
+  font-family: inherit;
+  color: var(--text);
+  text-align: left;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.log-edit::after { content: " ✎"; color: var(--muted); }
+
+.log-edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+}
+
+.log-edit-title { margin: 0; font-size: 0.85rem; font-weight: 600; }
+
+.log-edit-actions { display: flex; align-items: center; gap: 12px; }
+.log-edit-actions .btn-secondary { min-height: 40px; padding: 8px 18px; }
+
 .log-row .meal-delete {
   flex: 0 0 34px;
   min-height: 34px;

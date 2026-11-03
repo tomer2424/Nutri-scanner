@@ -8,7 +8,7 @@
 // The live API is still checked — but for its *contract*, not its values.
 
 import { readFileSync } from "node:fs";
-import { install, wait, stubFetch, check, section, finish } from "./harness.mjs";
+import { install, wait, stubFetch, check, section, finish, textOf } from "./harness.mjs";
 
 const NUTELLA = JSON.parse(readFileSync(new URL("./fixtures/nutella.json", import.meta.url)));
 const NUTELLA_BARCODE = "3017620422003";
@@ -1367,6 +1367,381 @@ check("a custom name is rendered as inert literal text",
       customNastyRow.textContent.slice(0, 40));
 check("it is stored verbatim rather than mangled",
       storedHistory()[0].name === NASTY_NAME, storedHistory()[0].name);
+
+await clearAll();
+
+// ───────────────────────── teaching a product ─────────────────────────
+// A barcode Open Food Facts doesn't have (or has no numbers for) can be typed
+// in from the label once, and is then found locally with no network at all.
+
+section("teaching a product");
+
+const TAUGHT_KEY = "nutri-scanner-custom-products";
+const storedTaught = () => JSON.parse(app.store.get(TAUGHT_KEY) || "null");
+const setTeach = (key, value) => { app.el(`teach-${key}`).value = String(value); };
+const fireTeach = () => app.el("teach-form").listeners.submit({ preventDefault() {} });
+const teachError = () => (app.el("teach-error").hidden ? null : app.el("teach-error").textContent);
+const fillTeach = (name, calories, protein = "", carbs = "", fat = "") => {
+  app.el("teach-name").value = name;
+  setTeach("calories", calories);
+  setTeach("protein", protein);
+  setTeach("carbs", carbs);
+  setTeach("fat", fat);
+};
+// Counts every request the app makes while `run` is going.
+const countFetches = async (run) => {
+  let calls = 0;
+  const inner = globalThis.fetch;
+  globalThis.fetch = (...args) => { calls++; return inner(...args); };
+  try { await run(); } finally { globalThis.fetch = inner; }
+  return calls;
+};
+
+const UNKNOWN = "7290000000001";
+app.store.delete(TAUGHT_KEY);
+await app.loadApp();
+
+// ── offered only for data gaps ──
+
+await app.lookup(UNKNOWN);
+check("not found offers Add Product Details",
+      showing() === "error" && app.el("btn-teach").hidden === false, showing());
+check("and makes it the one primary action",
+      app.el("btn-error-reset").className === "btn btn-secondary", app.el("btn-error-reset").className);
+
+const workingFetch = globalThis.fetch;
+globalThis.fetch = async () => { throw new TypeError("Failed to fetch"); };
+await app.lookup(UNKNOWN);
+globalThis.fetch = workingFetch;
+check("a network error does not offer it",
+      app.el("error-message").textContent.startsWith("Network error") && app.el("btn-teach").hidden === true,
+      app.el("error-message").textContent);
+check("and keeps Scan Another Product primary",
+      app.el("btn-error-reset").className === "btn btn-primary", app.el("btn-error-reset").className);
+
+app.click("btn-error-reset");
+check("leaving the error hides the offer again", app.el("btn-teach").hidden === true);
+
+// ── the form ──
+
+await app.lookup(UNKNOWN);
+app.click("btn-teach");
+check("the form opens on its own screen", showing() === "teach", showing());
+check("with the Home tab still lit", app.activeTab() === "home", app.activeTab());
+check("naming the barcode", app.el("teach-barcode").textContent === `Barcode ${UNKNOWN}`,
+      app.el("teach-barcode").textContent);
+check("as a new product", app.el("teach-title").textContent === "Add Product Details");
+check("with empty fields",
+      app.el("teach-name").value === "" && app.el("teach-calories").value === "",
+      `${app.el("teach-name").value} / ${app.el("teach-calories").value}`);
+
+for (const [fields, why] of [
+  [["", 100], "a blank name"],
+  [["   ", 100], "a whitespace-only name"],
+  [["Hummus", ""], "blank calories"],
+  [["Hummus", -5], "negative calories"],
+  [["Hummus", 1200], "over 1000 kcal per 100 g"],
+  [["Hummus", 100, "abc"], "a non-numeric protein"],
+  [["Hummus", 100, 7, 101], "over 100 g of carbs per 100 g"],
+]) {
+  fillTeach(...fields);
+  app.el("teach-error").hidden = true;
+  fireTeach();
+  check(`${why} is rejected`, teachError() !== null && showing() === "teach", teachError());
+  check(`nothing is saved for ${why}`, storedTaught() === null, app.store.get(TAUGHT_KEY));
+}
+
+fillTeach("Hummus", 250, 7.5, 12);   // fat left blank
+fireTeach();
+check("a valid product saves", teachError() === null, teachError());
+check("it is stored by barcode with the per-100 g schema",
+      JSON.stringify(storedTaught()) === JSON.stringify({
+        [UNKNOWN]: { name: "Hummus", calories_100g: 250, protein_100g: 7.5, carbs_100g: 12, fat_100g: 0 },
+      }),
+      app.store.get(TAUGHT_KEY));
+check("and lands on results", showing() === "results", showing());
+check("at 100 g", app.el("weight-results").value === "100", app.el("weight-results").value);
+check("with the entered figures",
+      app.headline().join(" | ") === "250 kcalCalories | 7.5 gProtein | 12 gCarbs | 0 gFat",
+      app.headline().join(" | "));
+check("named and barcoded",
+      app.el("product-name").textContent === "Hummus" && app.el("product-barcode").textContent === UNKNOWN,
+      `${app.el("product-name").textContent} / ${app.el("product-barcode").textContent}`);
+check("marked as entered by the user",
+      app.el("result-note").textContent.includes("values you entered"), app.el("result-note").textContent);
+check("and offering Fix Product Details", app.el("btn-fix-product").hidden === false);
+
+setGrams("50");
+check("it scales like any product", /^125 kcal/.test(app.headline()[0]), app.headline()[0]);
+app.click("btn-save-meal");
+check("Save as Quick Add works from it",
+      storedMeals().length === 1 && storedMeals()[0].name === "Hummus" && storedMeals()[0].calories === 125,
+      JSON.stringify(storedMeals()));
+app.click("btn-add-total");
+await wait(1200);
+check("Add works from it", app.macros() === "125 / 3.8 / 6 / 0", app.macros());
+
+// ── found locally, with no network ──
+
+let lookups = await countFetches(() => app.lookup(UNKNOWN));
+check("looking it up again makes no request", lookups === 0, `${lookups} requests`);
+check("and goes straight to results", showing() === "results" && app.el("product-name").textContent === "Hummus",
+      showing());
+
+lookups = await countFetches(() => app.lookup(NUTELLA_BARCODE));
+check("other barcodes still go to Open Food Facts", lookups === 1, `${lookups} requests`);
+check("which shows no Fix button", app.el("btn-fix-product").hidden === true);
+check("and no entered-by-you note", !app.el("result-note").textContent.includes("values you entered"),
+      app.el("result-note").textContent);
+
+await app.loadApp();
+lookups = await countFetches(() => app.lookup(UNKNOWN));
+check("it survives a reload", lookups === 0 && app.el("product-name").textContent === "Hummus",
+      `${lookups} requests, ${app.el("product-name").textContent}`);
+
+// Taught as a 12-digit UPC-A, scanned as the 13-digit EAN form of it.
+await app.lookup("123123123123");
+app.click("btn-teach");
+fillTeach("Store Brand Crackers", 430, 9);
+fireTeach();
+lookups = await countFetches(() => app.lookup("0123123123123"));
+check("a product taught as UPC-A is found from its EAN-13 form",
+      lookups === 0 && app.el("product-name").textContent === "Store Brand Crackers",
+      `${lookups} requests, ${app.el("product-name").textContent}`);
+
+// ── fixing a taught product ──
+
+app.click("btn-fix-product");
+check("Fix opens the form filled with the saved values",
+      showing() === "teach" && app.el("teach-title").textContent === "Fix Product Details"
+      && app.el("teach-name").value === "Store Brand Crackers" && app.el("teach-calories").value === "430"
+      && app.el("teach-protein").value === "9",
+      `${app.el("teach-title").textContent}: ${app.el("teach-name").value} ${app.el("teach-calories").value}`);
+app.click("btn-teach-cancel");
+check("cancelling a fix returns to the results", showing() === "results", showing());
+
+app.click("btn-fix-product");
+setTeach("calories", 410);
+fireTeach();
+check("saving a fix updates the stored entry in place",
+      storedTaught()["123123123123"].calories_100g === 410 && !("0123123123123" in storedTaught()),
+      app.store.get(TAUGHT_KEY));
+check("and the results show the fixed value", /^410 kcal/.test(app.headline()[0]), app.headline()[0]);
+await app.lookup("123123123123");
+check("as does the next lookup", /^410 kcal/.test(app.headline()[0]), app.headline()[0]);
+
+// Cancelling a brand-new product has no results to go back to.
+await app.lookup("7290000000002");
+app.click("btn-teach");
+app.click("btn-teach-cancel");
+check("cancelling a new product goes home", showing() === "home", showing());
+check("and saves nothing", !("7290000000002" in storedTaught()), app.store.get(TAUGHT_KEY));
+
+// ── found, but with no nutrition facts ──
+
+routes.set("7290000000003", { status: 1, product: { product_name: "Mystery Bar", nutriments: {} } });
+await app.lookup("7290000000003");
+check("a product with no nutrition data offers Add Product Details",
+      app.el("error-message").textContent.includes("no nutrition data") && app.el("btn-teach").hidden === false,
+      app.el("error-message").textContent);
+app.click("btn-teach");
+check("the form starts from the Open Food Facts name",
+      app.el("teach-name").value === "Mystery Bar", app.el("teach-name").value);
+setTeach("calories", 0);   // 0 is a real answer, not a missing one
+fireTeach();
+check("0 kcal is accepted", teachError() === null && showing() === "results", teachError());
+lookups = await countFetches(() => app.lookup("7290000000003"));
+check("and from now on it is answered locally", lookups === 0, `${lookups} requests`);
+
+// ── untrusted names and bad storage ──
+
+await app.lookup("7290000000004");
+app.click("btn-teach");
+fillTeach(NASTY_NAME, 100);
+fireTeach();
+app.click("btn-add-total");
+await wait(1200);
+app.click("tab-log");
+const taughtNastyRow = logRows()[0].children[0];
+check("a taught name renders as inert literal text",
+      app.el("product-name").children.length === 0 && taughtNastyRow.textContent.includes(NASTY_NAME)
+      && taughtNastyRow.children.length === 0,
+      taughtNastyRow.textContent.slice(0, 40));
+
+app.store.set(TAUGHT_KEY, "{not json");
+await app.loadApp();
+await app.lookup(UNKNOWN);
+check("a corrupt dictionary loads as empty", showing() === "error", showing());
+
+// Spliced in as text: a "__proto__" key in an object literal sets the
+// prototype instead of an own key, so JSON.stringify would silently drop it.
+app.store.set(TAUGHT_KEY, JSON.stringify({
+  [UNKNOWN]: { name: "Hummus", calories_100g: 250, protein_100g: 7.5, carbs_100g: 12, fat_100g: 0 },
+  "7290000000005": { name: "Bad", calories_100g: "lots", protein_100g: 1, carbs_100g: 1, fat_100g: 1 },
+  "7290000000006": { name: "Negative", calories_100g: -1, protein_100g: 1, carbs_100g: 1, fat_100g: 1 },
+}).replace(/^\{/, '{"__proto__":{"name":"Polluter","calories_100g":1,"protein_100g":1,"carbs_100g":1,"fat_100g":1},'));
+check("the hostile key really is in storage", app.store.get(TAUGHT_KEY).includes('"__proto__"'));
+await app.loadApp();
+check("loading it doesn't pollute Object.prototype", ({}).name === undefined, String(({}).name));
+await app.lookup(UNKNOWN);
+check("a good entry survives bad neighbours",
+      showing() === "results" && app.el("product-name").textContent === "Hummus", showing());
+await app.lookup("7290000000005");
+check("a malformed entry is dropped", showing() === "error", showing());
+await app.lookup("7290000000006");
+check("a negative entry is dropped", showing() === "error", showing());
+
+app.click("btn-reset");
+app.store.delete(TAUGHT_KEY);
+await clearAll();
+
+// ───────────────────────── editing a log entry ────────────────────────
+// Tapping a row edits its weight. Entries carry their per-100 g values, so the
+// new figures are exactly what a scan at that weight would have credited.
+
+section("editing a log entry");
+
+const tapLogLabel = (i) => logRows()[i].children[0].listeners.click?.();
+const editorOpen = () => logRows().some((row) => row.id === "log-edit-form");
+const setEditWeight = (value) => { app.el("log-edit-weight").value = String(value); };
+const saveEdit = () => app.el("log-edit-form").listeners.submit({ preventDefault() {} });
+const editError = () => (app.el("log-edit-error").hidden ? null : app.el("log-edit-error").textContent);
+const editTo = (grams) => { tapLogLabel(0); setEditWeight(grams); saveEdit(); };
+const logMatchesTotals = () =>
+  app.macros() === [sumOf("calories", 0), sumOf("protein", 1), sumOf("carbs", 1), sumOf("fat", 1)].join(" / ");
+
+await app.lookup(NUTELLA_BARCODE, 50);
+app.click("btn-add-total");
+await wait(1200);
+
+const per100 = storedHistory()[0].per100;
+check("a scanned entry stores its per-100 g values",
+      per100 && [per100.calories, per100.protein, per100.carbs, per100.fat].every(Number.isFinite),
+      JSON.stringify(per100));
+
+app.click("tab-log");
+check("its row is editable", logRows()[0].children[0].className.includes("log-edit"),
+      logRows()[0].children[0].className);
+tapLogLabel(0);
+check("tapping it opens the editor", editorOpen());
+check("titled with the product",
+      textOf(app.el("log-edit-form")).startsWith("Edit Weight for Nutella"), textOf(app.el("log-edit-form")).slice(0, 30));
+check("pre-filled with the current weight", app.el("log-edit-weight").value === "50", app.el("log-edit-weight").value);
+
+app.click("log-edit-cancel");
+check("Cancel closes it", !editorOpen() && logLabels()[0] === "Nutella — 50g (270 kcal, 3.1g)", logLabels()[0]);
+check("and changes nothing", app.macros() === "270 / 3.1 / 28.8 / 15.4", app.macros());
+
+// ── validation ──
+
+for (const bad of ["", "0", "-5", "abc", "99999"]) {
+  tapLogLabel(0);
+  setEditWeight(bad);
+  saveEdit();
+  check(`weight ${JSON.stringify(bad)} shows an error and stays open`, editError() !== null && editorOpen(), editError());
+  check(`weight ${JSON.stringify(bad)} changes nothing`,
+        app.macros() === "270 / 3.1 / 28.8 / 15.4" && storedHistory()[0].weight === 50,
+        `${app.macros()} / ${storedHistory()[0].weight} g`);
+}
+app.click("log-edit-cancel");
+
+// ── a valid edit ──
+
+editTo(100);
+check("saving closes the editor", !editorOpen());
+check("the entry is rescaled and stored",
+      storedHistory()[0].weight === 100 && storedHistory()[0].calories === 539 && storedHistory()[0].protein === 6.3,
+      JSON.stringify(storedHistory()[0]));
+check("the row shows the new weight", logLabels()[0] === "Nutella — 100g (539 kcal, 6.3g)", logLabels()[0]);
+check("the totals move by the difference", app.macros() === "539 / 6.3 / 57.5 / 30.9", app.macros());
+check("the counter still equals the sum of the log", logMatchesTotals(), app.macros());
+check("the totals are persisted", stored(TOTALS_KEY).calories === 539, app.store.get(TOTALS_KEY));
+
+// Matches what scanning 100 g live would have credited.
+await app.lookup(NUTELLA_BARCODE, 100);
+const live100 = app.headline().slice(0, 4).map((text) => text.match(/^[\d.]+/)[0]).join(" / ");
+app.click("btn-reset");
+check("an edited entry equals a live scan at that weight", live100 === "539 / 6.3 / 57.5 / 30.9", live100);
+
+// ── no drift ──
+
+app.click("tab-log");
+for (let round = 0; round < 5; round++) {
+  for (const grams of [100, 37, 12.5, 333, 50]) editTo(grams);
+}
+check("many edits back to 50 g land exactly on the 50 g figures",
+      app.macros() === "270 / 3.1 / 28.8 / 15.4", app.macros());
+check("and the counter still equals the log", logMatchesTotals(), app.macros());
+
+// With other items alongside, only the edited one moves.
+await app.lookup(NUTELLA_BARCODE, 100);
+app.click("btn-save-meal");
+app.click("btn-reset");
+app.click("tab-log");
+tapMeal(0);
+await wait(1200);
+check("a quick-add's log entry is editable too",
+      logRows()[0].children[0].className.includes("log-edit"), logRows()[0].children[0].className);
+check("and has an id of its own, not the meal's",
+      storedHistory()[1].id !== storedMeals()[0].id, `${storedHistory()[1].id} / ${storedMeals()[0].id}`);
+tapMeal(0);
+await wait(1200);
+check("two adds of one meal get distinct log ids",
+      new Set(storedHistory().map((entry) => entry.id)).size === 3, JSON.stringify(storedHistory().map((e) => e.id)));
+editTo(20);   // the newest row
+check("editing the newest of two identical rows changes that one",
+      logLabels()[0].includes("20g") && logLabels()[1].includes("100g") && logLabels()[2].includes("50g"),
+      logLabels().join(" | "));
+check("with the totals still matching the log", logMatchesTotals(), app.macros());
+
+// ── entries that can't be edited ──
+
+await clearAll();
+app.click("btn-custom-toggle");
+clearCustomFields();
+app.el("custom-name").value = "Soup";
+setCustom("calories", 250);
+fireCustom();
+app.store.set(HISTORY_KEY, JSON.stringify([
+  ...storedHistory(),
+  // Logged before per100 existed.
+  { id: 1, name: "Old Nutella", weight: 50, calories: 270, protein: 3.1, carbs: 28.8, fat: 15.4, timestamp: Date.now() },
+  // per100 present but malformed.
+  { id: 2, name: "Broken", weight: 50, calories: 100, protein: 1, carbs: 1, fat: 1,
+    per100: { calories: "x", protein: 1, carbs: 1, fat: 1 }, timestamp: Date.now() },
+]));
+await app.loadApp();
+app.click("tab-log");
+check("custom, pre-update and malformed entries render as plain text",
+      logRows().every((row) => !row.children[0].className.includes("log-edit")
+                               && row.children[0].listeners.click === undefined),
+      logRows().map((row) => row.children[0].className).join(" | "));
+
+// ── leaving and day boundaries ──
+
+await clearAll();
+app.store.delete(RESET_TIME_KEY);
+app.store.delete(DAY_KEY);
+app.setTime("2026-10-28T23:50");
+await app.loadApp();
+await app.lookup(NUTELLA_BARCODE, 50);
+app.click("btn-add-total");
+await wait(1200);
+app.click("tab-log");
+
+tapLogLabel(0);
+app.click("tab-home");
+app.click("tab-log");
+check("a tab switch closes an open editor", !editorOpen());
+
+tapLogLabel(0);
+setEditWeight(100);
+app.setTime("2026-10-29T00:10");
+saveEdit();
+check("an edit saved after the reset time doesn't revive yesterday's entry",
+      storedHistory().length === 0 && app.macros() === "0 / 0 / 0 / 0" && !editorOpen(),
+      `${storedHistory().length} logged, ${app.macros()}`);
+app.setTime(null);
 
 await clearAll();
 

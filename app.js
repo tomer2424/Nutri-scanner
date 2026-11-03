@@ -25,6 +25,7 @@ const TARGETS_KEY = "nutri-scanner-targets";
 const HOME_KEY = "nutri-scanner-home";
 const RESET_TIME_KEY = "nutri-scanner-reset-time";
 const DAY_KEY = "nutri-scanner-logical-day";
+const CUSTOM_PRODUCTS_KEY = "nutri-scanner-custom-products";
 const DEFAULT_RESET_TIME = "00:00";
 const RESET_TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 const DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -40,11 +41,15 @@ const MAX_TARGET = 100000;
 //   onHome   — whether its card shows on the home screen by default. The user
 //              can change this from Edit Goals. A macro without a card is
 //              still credited, stored and targeted exactly the same.
+//   nutriment — the Open Food Facts field it's read from, which a taught
+//              product is translated back into
+//   max100   — the most a label can sensibly claim per 100 g; anything above is
+//              taken as a typo when teaching a product
 const MACROS = [
-  { key: "calories", source: "kcal",          label: "Calories", unit: "kcal", decimals: 0, fallback: 2000, onHome: true },
-  { key: "protein",  source: "proteins",      label: "Protein",  unit: "g",    decimals: 1, fallback: 150,  onHome: true },
-  { key: "carbs",    source: "carbohydrates", label: "Carbs",    unit: "g",    decimals: 1, fallback: 250,  onHome: false },
-  { key: "fat",      source: "fat",           label: "Fat",      unit: "g",    decimals: 1, fallback: 70,   onHome: false },
+  { key: "calories", source: "kcal",          label: "Calories", unit: "kcal", decimals: 0, fallback: 2000, onHome: true,  nutriment: "energy-kcal_100g",   max100: 1000 },
+  { key: "protein",  source: "proteins",      label: "Protein",  unit: "g",    decimals: 1, fallback: 150,  onHome: true,  nutriment: "proteins_100g",      max100: 100 },
+  { key: "carbs",    source: "carbohydrates", label: "Carbs",    unit: "g",    decimals: 1, fallback: 250,  onHome: false, nutriment: "carbohydrates_100g", max100: 100 },
+  { key: "fat",      source: "fat",           label: "Fat",      unit: "g",    decimals: 1, fallback: 70,   onHome: false, nutriment: "fat_100g",           max100: 100 },
 ];
 
 const zeroTotals = () => Object.fromEntries(MACROS.map((m) => [m.key, 0]));
@@ -72,6 +77,13 @@ const els = {
   btnAddTotal: $("btn-add-total"),
   btnSaveMeal: $("btn-save-meal"),
   btnReset: $("btn-reset"),
+  btnFixProduct: $("btn-fix-product"),
+  teachForm: $("teach-form"),
+  teachTitle: $("teach-title"),
+  teachBarcode: $("teach-barcode"),
+  teachName: $("teach-name"),
+  teachError: $("teach-error"),
+  btnTeachCancel: $("btn-teach-cancel"),
   totalsGrid: $("totals-grid"),
   btnOptions: $("btn-options"),
   optionsMenu: $("options-menu"),
@@ -98,6 +110,7 @@ const els = {
   errorMessage: $("error-message"),
   errorDetail: $("error-detail"),
   btnErrorReset: $("btn-error-reset"),
+  btnTeach: $("btn-teach"),
   diagnostics: $("diagnostics"),
   crop: $("crop"),
 };
@@ -105,7 +118,7 @@ const els = {
 // Bottom-nav tabs. Each one is a <button id="tab-NAME"> in the nav bar and a
 // <section id="view-NAME">; adding a tab is one entry here plus that markup.
 const TABS = ["home", "log"];
-const VIEWS = [...TABS, "scanning", "loading", "results", "error"];
+const VIEWS = [...TABS, "scanning", "loading", "results", "error", "teach"];
 
 let view = "home";
 // Bumped by every reset(). A camera start or lookup still awaiting when the
@@ -121,6 +134,14 @@ let resetTime = DEFAULT_RESET_TIME;
 let day = null;          // the logical day the totals and log belong to
 let meals = [];
 let history = [];
+let taught = {};         // barcode → product the user typed in from the label
+let shownCode = null;    // the barcode on the results screen
+// The product the teach form is for: its barcode, a name to start from, and —
+// when fixing one already taught — the key it's stored under.
+let teachCode = null;
+let teachName = "";
+let teachKey = null;
+let editingId = null;    // the log entry whose weight is being edited
 let addedTimer = null;
 let mealAddedTimer = null;
 let customTimer = null;
@@ -148,10 +169,15 @@ function setState(name) {
   }
 }
 
-function showError(message, detail) {
+// `teachable` offers Add Product Details, for the two errors that are a gap in
+// the data rather than a fault: not found, and found with no nutrition facts.
+function showError(message, detail, teachable = false) {
   els.errorMessage.textContent = message;
   els.errorDetail.textContent = detail || "";
   els.errorDetail.hidden = !detail;
+  els.btnTeach.hidden = !teachable;
+  // One primary action: teaching when it's offered, otherwise scanning again.
+  els.btnErrorReset.className = teachable ? "btn btn-secondary" : "btn btn-primary";
   setState("error");
 }
 
@@ -425,6 +451,15 @@ async function fetchProduct(code) {
 }
 
 async function lookUp(code) {
+  // A product the user taught never goes to the network: it isn't in Open Food
+  // Facts, or it was missing the numbers we need.
+  const local = findTaught(code);
+  if (local) {
+    product = taughtProduct(...local);
+    renderResults(code);
+    return;
+  }
+
   const mine = flow;
   setState("loading");
   els.loadingText.textContent = `Looking up ${code}…`;
@@ -440,9 +475,12 @@ async function lookUp(code) {
         return;
       }
     }
+    teachCode = code;
+    teachName = "";
     showError(
       "Product not found in database.",
-      `Barcode ${code} isn't in Open Food Facts. It's a crowd-sourced database, so local and store-brand products are often missing — that isn't a scanning fault.`,
+      `Barcode ${code} isn't in Open Food Facts. It's a crowd-sourced database, so local and store-brand products are often missing — that isn't a scanning fault. You can add its details from the label.`,
+      true,
     );
   } catch (err) {
     if (mine !== flow) return;
@@ -493,23 +531,39 @@ function basisUnit(item) {
   return /\b\d*\s*(ml|cl|l|liter|litre)\b/i.test(item.quantity || "") ? "ml" : "g";
 }
 
-function renderResults(scannedCode) {
-  const nutriments = product.nutriments || {};
-  const core = {
-    kcal: kcalPer100(nutriments),
-    proteins: toNumber(nutriments.proteins_100g),
-    carbohydrates: toNumber(nutriments.carbohydrates_100g),
-    fat: toNumber(nutriments.fat_100g),
+// Per 100 g (or ml), straight from the product; null where it has no figure.
+// The results screen, saved items and log edits all scale from these.
+function per100Values(item) {
+  const n = item.nutriments || {};
+  return {
+    kcal: kcalPer100(n),
+    proteins: toNumber(n.proteins_100g),
+    carbohydrates: toNumber(n.carbohydrates_100g),
+    fat: toNumber(n.fat_100g),
+    sugars: toNumber(n.sugars_100g),
+    saturatedFat: toNumber(n["saturated-fat_100g"]),
+    fiber: toNumber(n.fiber_100g),
+    salt: toNumber(n.salt_100g),
   };
+}
+
+function renderResults(scannedCode) {
+  const per100 = per100Values(product);
 
   // Distinguishing this from "not found" tells the user the scan itself worked.
-  if (Object.values(core).every((v) => v === null)) {
+  if (MACROS.every((macro) => per100[macro.source] === null)) {
+    teachCode = scannedCode;
+    teachName = String(product.product_name || product.product_name_en || "");
     showError(
       "This product has no nutrition data yet.",
-      `${product.product_name || "The product"} was found in Open Food Facts, but nobody has filled in its nutrition facts. The barcode scanned correctly.`,
+      `${product.product_name || "The product"} was found in Open Food Facts, but nobody has filled in its nutrition facts. The barcode scanned correctly. You can add them from the label.`,
+      true,
     );
     return;
   }
+
+  shownCode = scannedCode;
+  els.btnFixProduct.hidden = !product.taughtKey;
 
   const name = product.product_name || product.product_name_en || "Unnamed product";
   els.productName.textContent = name;
@@ -530,6 +584,7 @@ function renderResults(scannedCode) {
   renderNutrition();
 
   const notes = [];
+  if (product.taughtKey) notes.push("Saved on this phone from values you entered.");
   if (product.nutrition_data_per && product.nutrition_data_per !== "100g") {
     notes.push(`Heads up: this entry reports values per ${product.nutrition_data_per}, not per 100 g.`);
   }
@@ -542,8 +597,9 @@ function renderResults(scannedCode) {
   setState("results");
 }
 
-function readWeight() {
-  const raw = els.weightResults.value.trim();
+// Shared by the results screen and a log entry's weight editor.
+function validWeight(input) {
+  const raw = String(input).trim();
   if (raw === "") return { error: "Enter a weight in grams." };
 
   const value = Number(raw);
@@ -554,6 +610,10 @@ function readWeight() {
   return { value };
 }
 
+function readWeight() {
+  return validWeight(els.weightResults.value);
+}
+
 // Every scaled number the results screen shows comes from here, and so does
 // every number "Add to Daily Total" adds. One source of truth, so the total can
 // never drift from what was on screen. Null for an invalid weight, which is
@@ -562,18 +622,10 @@ function currentValues() {
   const { value: weight } = readWeight();
   if (!product || weight === undefined) return null;
 
-  const n = product.nutriments || {};
-  return {
-    weight,
-    kcal: scale(kcalPer100(n), weight),
-    proteins: scale(toNumber(n.proteins_100g), weight),
-    carbohydrates: scale(toNumber(n.carbohydrates_100g), weight),
-    fat: scale(toNumber(n.fat_100g), weight),
-    sugars: scale(toNumber(n.sugars_100g), weight),
-    saturatedFat: scale(toNumber(n["saturated-fat_100g"]), weight),
-    fiber: scale(toNumber(n.fiber_100g), weight),
-    salt: scale(toNumber(n.salt_100g), weight),
-  };
+  const per100 = per100Values(product);
+  const values = { weight, per100 };
+  for (const [key, value] of Object.entries(per100)) values[key] = scale(value, weight);
+  return values;
 }
 
 // The grams field's input handler, and the first render of every result.
@@ -795,7 +847,10 @@ function creditTotals(item) {
   }
   saveTotals();
 
-  history.push({ id: uniqueId(history), ...item, timestamp: Date.now() });
+  // The id goes after the spread: a quick-add passes in the saved meal, whose
+  // own id would otherwise give every add of that meal the same log id — and
+  // deleting or editing one row would then act on another.
+  history.push({ ...item, id: uniqueId(history), timestamp: Date.now() });
   writeStored(HISTORY_KEY, history);
 
   renderTotals();
@@ -904,19 +959,32 @@ function hasItemShape(item) {
     && Number.isFinite(item.protein);
 }
 
+const validPer100 = (per100) => !!per100 && typeof per100 === "object"
+  && MACROS.every((macro) => Number.isFinite(per100[macro.key]) && per100[macro.key] >= 0);
+
 // Fills in any macro a stored row predates, so nothing downstream ever sees
-// undefined and turns it into NaN.
+// undefined and turns it into NaN. A malformed per100 is dropped, which just
+// makes that row read-only.
 function normalizeItem(item) {
   const filled = { ...item };
   for (const macro of MACROS) filled[macro.key] = storedNumber(item[macro.key], 0);
+  if (!validPer100(item.per100)) delete filled.per100;
   return filled;
 }
 
 // Builds a meal / log item from whatever the results screen is showing, with
 // every macro routed through displayed() so stored figures match the screen.
+// per100 keeps the unrounded label values, so a log entry's weight can be
+// changed later by exactly the arithmetic a fresh scan would use. A missing
+// figure is stored as 0, which is what it already contributes.
 function itemFrom(values) {
   const item = { name: productLabel(), weight: values.weight };
-  for (const macro of MACROS) item[macro.key] = displayed(values[macro.source], macro.decimals);
+  const per100 = {};
+  for (const macro of MACROS) {
+    item[macro.key] = displayed(values[macro.source], macro.decimals);
+    per100[macro.key] = values.per100[macro.source] ?? 0;
+  }
+  item.per100 = per100;
   return item;
 }
 
@@ -1014,14 +1082,15 @@ function renderMeals() {
 // creditTotals() — so it lands in the totals and today's log by the same path
 // as a scan, with no separate bookkeeping to keep in step.
 
-function readMacroField(key, label) {
-  const raw = $(`custom-${key}`).value.trim();
+// Shared by the custom-item and teach-a-product forms.
+function readMacroField(field, label, max) {
+  const raw = field.value.trim();
   if (raw === "") return { value: 0 };          // a blank field means zero
 
   const value = Number(raw);
   if (!Number.isFinite(value)) return { error: `${label} must be a number.` };
   if (value < 0) return { error: `${label} can't be negative.` };
-  if (value > MAX_TARGET) return { error: `${label} is over ${MAX_TARGET} — check for a typo.` };
+  if (value > max) return { error: `${label} is over ${max} — check for a typo.` };
   return { value };
 }
 
@@ -1054,7 +1123,7 @@ function submitCustom(event) {
   const item = { name: els.customName.value.trim().slice(0, MAX_MEAL_NAME) || "Custom Entry", weight: 0 };
 
   for (const macro of MACROS) {
-    const { value, error } = readMacroField(macro.key, macro.label);
+    const { value, error } = readMacroField($(`custom-${macro.key}`), macro.label, MAX_TARGET);
     if (error) {
       els.customError.textContent = error;
       els.customError.hidden = false;
@@ -1093,6 +1162,114 @@ function submitCustom(event) {
     els.btnCustomSubmit.textContent = "Log it";
     els.btnCustomSubmit.disabled = false;
   }, ADDED_FEEDBACK_MS);
+}
+
+// ─────────────────────── teach a product ──────────────────────
+// Products missing from Open Food Facts (or missing their numbers) can be typed
+// in from the label once. They're kept on this phone by barcode and translated
+// into the same shape an Open Food Facts product has, so the results screen,
+// Add, Save as Quick Add and the log all treat them like any other.
+
+// Keys must be digits: a stored "__proto__" key would otherwise be assigned
+// as the object's prototype rather than as an entry.
+function isTaughtEntry(code, entry) {
+  return /^\d+$/.test(code)
+    && !!entry && typeof entry === "object"
+    && typeof entry.name === "string" && entry.name.trim() !== ""
+    && MACROS.every((macro) => Number.isFinite(entry[`${macro.key}_100g`]) && entry[`${macro.key}_100g`] >= 0);
+}
+
+function loadTaught() {
+  const parsed = readStored(CUSTOM_PRODUCTS_KEY);
+  const loaded = {};
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return loaded;
+  // One bad entry is dropped on its own rather than taking the rest with it.
+  for (const [code, entry] of Object.entries(parsed)) {
+    if (isTaughtEntry(code, entry)) loaded[code] = entry;
+  }
+  return loaded;
+}
+
+// Checks every form of the barcode, so a product taught from a 12-digit UPC-A
+// is still found when the decoder reports it as a 13-digit EAN.
+function findTaught(code) {
+  for (const variant of barcodeVariants(code)) {
+    if (Object.hasOwn(taught, variant)) return [variant, taught[variant]];
+  }
+  return null;
+}
+
+function taughtProduct(key, entry) {
+  const nutriments = {};
+  for (const macro of MACROS) nutriments[macro.nutriment] = entry[`${macro.key}_100g`];
+  return { product_name: entry.name, nutriments, taughtKey: key };
+}
+
+// New when teachKey is null; otherwise fixing the product stored under it.
+function openTeachForm() {
+  const entry = teachKey ? taught[teachKey] : null;
+  els.teachTitle.textContent = entry ? "Fix Product Details" : "Add Product Details";
+  els.teachBarcode.textContent = `Barcode ${teachCode}`;
+  els.teachName.value = entry ? entry.name : teachName;
+  for (const macro of MACROS) {
+    $(`teach-${macro.key}`).value = entry ? String(entry[`${macro.key}_100g`]) : "";
+  }
+  els.teachError.hidden = true;
+  setState("teach");
+  els.teachName.focus();
+}
+
+function teachFailed(message, field) {
+  els.teachError.textContent = message;
+  els.teachError.hidden = false;
+  field.focus();
+}
+
+function submitTeach(event) {
+  event.preventDefault();
+
+  const name = els.teachName.value.trim().slice(0, MAX_MEAL_NAME);
+  if (!name) {
+    teachFailed("Enter the product's name.", els.teachName);
+    return;
+  }
+
+  const entry = { name };
+  for (const macro of MACROS) {
+    const field = $(`teach-${macro.key}`);
+    // Calories are on every label, and a blank there is more likely a skipped
+    // field than a zero. 0 itself is fine: water, diet drinks.
+    if (macro.key === "calories" && field.value.trim() === "") {
+      teachFailed("Enter the calories per 100 g from the label.", field);
+      return;
+    }
+    const { value, error } = readMacroField(field, macro.label, macro.max100);
+    if (error) {
+      teachFailed(error, field);
+      return;
+    }
+    entry[`${macro.key}_100g`] = value;
+  }
+
+  const key = teachKey || teachCode;
+  taught[key] = entry;
+  writeStored(CUSTOM_PRODUCTS_KEY, taught);
+
+  els.teachError.hidden = true;
+  teachKey = null;
+  product = taughtProduct(key, entry);
+  renderResults(teachCode);
+}
+
+// Fixing returns to the results it came from; a new product has none, so
+// cancelling that ends the flow.
+function cancelTeach() {
+  if (teachKey && product) {
+    teachKey = null;
+    setState("results");
+  } else {
+    reset();
+  }
 }
 
 // ───────────────────────── daily targets ──────────────────────
@@ -1228,6 +1405,7 @@ function deleteHistoryEntry(id) {
   if (index === -1) return;
 
   const [entry] = history.splice(index, 1);
+  if (entry.id === editingId) editingId = null;
 
   // Clamped at zero: the totals are a running sum of rounded values, so a
   // sequence of adds and deletes can otherwise leave a stray -0.1 behind.
@@ -1243,12 +1421,124 @@ function deleteHistoryEntry(id) {
   renderHistory();
 }
 
+// Only entries that carry their per-100 g values can be rescaled exactly.
+// Custom items have no weight, and rows saved before per100 existed would
+// have to be reverse-engineered from rounded numbers.
+const isEditable = (entry) => entry.weight > 0 && !!entry.per100;
+
+function startHistoryEdit(id) {
+  editingId = id;
+  renderHistory();
+  $("log-edit-weight").focus();
+}
+
+function cancelHistoryEdit() {
+  editingId = null;
+  renderHistory();
+}
+
+function saveHistoryEdit(id) {
+  // Read first: checkDay() below may re-render the list and detach the field.
+  const raw = $("log-edit-weight").value;
+
+  // An editor left open across the reset time belongs to yesterday's log,
+  // which has just been cleared. Editing it would revive a deleted entry.
+  checkDay();
+  const entry = history.find((item) => item.id === id);
+  if (!entry || !isEditable(entry)) {
+    cancelHistoryEdit();
+    return;
+  }
+
+  const { value: weight, error } = validWeight(raw);
+  if (error) {
+    $("log-edit-error").textContent = error;
+    $("log-edit-error").hidden = false;
+    $("log-edit-weight").focus();
+    return;
+  }
+
+  // The same displayed(scale()) a scan at this weight would credit, and the
+  // same delta-through-displayed() and zero clamp that deleting uses — so the
+  // counter still equals the sum of the log afterwards.
+  for (const macro of MACROS) {
+    const next = displayed(scale(entry.per100[macro.key], weight), macro.decimals);
+    const total = displayed((totals[macro.key] || 0) - entry[macro.key] + next, macro.decimals);
+    totals[macro.key] = Math.max(0, total);
+    entry[macro.key] = next;
+  }
+  entry.weight = weight;
+
+  saveTotals();
+  writeStored(HISTORY_KEY, history);
+  editingId = null;
+  renderTotals();
+  renderHistory();
+}
+
+function editRow(entry) {
+  const form = document.createElement("form");
+  form.className = "log-edit-form";
+  form.id = "log-edit-form";
+  form.noValidate = true;   // our own messages, as in the other forms
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    saveHistoryEdit(entry.id);
+  });
+
+  const title = document.createElement("p");
+  title.className = "log-edit-title";
+  title.textContent = `Edit Weight for ${entry.name}`;
+
+  const input = document.createElement("input");
+  input.id = "log-edit-weight";
+  input.className = "text-input";
+  input.type = "number";
+  input.inputMode = "decimal";
+  input.min = "0";
+  input.step = "any";
+  input.value = String(entry.weight);
+  input.setAttribute("aria-label", "Weight in grams");
+
+  const error = document.createElement("p");
+  error.id = "log-edit-error";
+  error.className = "error-text";
+  error.setAttribute("role", "alert");
+  error.hidden = true;
+
+  const actions = document.createElement("div");
+  actions.className = "log-edit-actions";
+
+  const save = document.createElement("button");
+  save.type = "submit";
+  save.className = "btn btn-secondary";
+  save.textContent = "Save";
+
+  const cancel = document.createElement("button");
+  cancel.id = "log-edit-cancel";
+  cancel.type = "button";
+  cancel.className = "btn btn-link";
+  cancel.textContent = "Cancel";
+  cancel.addEventListener("click", cancelHistoryEdit);
+
+  actions.append(save, cancel);
+  form.append(title, input, error, actions);
+  return form;
+}
+
 function historyRow(entry) {
+  if (entry.id === editingId && isEditable(entry)) return editRow(entry);
+
   const row = document.createElement("div");
   row.className = "log-row";
 
-  const label = document.createElement("span");
-  label.className = "log-label";
+  const editable = isEditable(entry);
+  const label = document.createElement(editable ? "button" : "span");
+  label.className = editable ? "log-label log-edit" : "log-label";
+  if (editable) {
+    label.type = "button";
+    label.addEventListener("click", () => startHistoryEdit(entry.id));
+  }
   // textContent: these names come from Open Food Facts or the custom-entry
   // field — both untrusted, and both persisted and re-rendered here.
   label.textContent = itemLabel(entry);
@@ -1288,6 +1578,16 @@ function reset(target = "home") {
   els.btnSaveMeal.disabled = false;
 
   product = null;
+  shownCode = null;
+  teachCode = null;
+  teachName = "";
+  teachKey = null;
+  editingId = null;
+  els.btnTeach.hidden = true;
+  els.btnFixProduct.hidden = true;
+  els.teachError.hidden = true;
+  els.teachName.value = "";
+  for (const macro of MACROS) $(`teach-${macro.key}`).value = "";
   els.weightResults.value = "";
   els.weightError.hidden = true;
   els.manualBarcode.value = "";
@@ -1328,6 +1628,14 @@ els.btnScan.addEventListener("click", startCamera);
 els.btnCancelScan.addEventListener("click", () => reset());
 els.btnReset.addEventListener("click", () => reset());
 els.btnErrorReset.addEventListener("click", () => reset());
+els.btnTeach.addEventListener("click", openTeachForm);
+els.btnFixProduct.addEventListener("click", () => {
+  teachCode = shownCode;
+  teachKey = product.taughtKey;
+  openTeachForm();
+});
+els.teachForm.addEventListener("submit", submitTeach);
+els.btnTeachCancel.addEventListener("click", cancelTeach);
 els.btnAddTotal.addEventListener("click", addToTotal);
 els.btnSaveMeal.addEventListener("click", saveMeal);
 els.btnOptions.addEventListener("click", toggleMenu);
@@ -1394,6 +1702,7 @@ shown = loadShown();
 totals = loadTotals();
 meals = loadMeals();
 history = loadHistory();
+taught = loadTaught();
 resetTime = loadResetTime();
 day = loadDay();
 checkDay();

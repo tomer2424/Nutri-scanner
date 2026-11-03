@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const APP_PATH = fileURLToPath(new URL("../app.js", import.meta.url));
-const VIEWS = ["home", "log", "scanning", "loading", "results", "error"];
+const VIEWS = ["home", "log", "scanning", "loading", "results", "error", "teach"];
 
 // `register` mirrors a real DOM closely enough for our purposes: an element
 // becomes findable by getElementById as soon as it is given an id, including

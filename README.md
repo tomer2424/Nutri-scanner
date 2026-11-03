@@ -18,8 +18,8 @@ python -m http.server 8000
 ## Tests
 
 ```bash
-node test/run.mjs             # 270 checks, including the live API contract
-node test/run.mjs --offline   # 266 checks, no network needed
+node test/run.mjs             # 364 checks, including the live API contract
+node test/run.mjs --offline   # 360 checks, no network needed
 ```
 
 No dependencies and no test framework — just Node. `app.js` exports nothing and touches the DOM at load, so [test/harness.mjs](test/harness.mjs) stubs the handful of browser APIs it uses, imports **the real file**, fires the listeners it registered, and reads back what it rendered. Nothing in the suite reimplements the app's logic, so a check passing means the shipped code works.
@@ -29,7 +29,7 @@ Two deliberate choices worth knowing before you extend it:
 - **Arithmetic runs against a recorded fixture**, not the live database. Open Food Facts is crowd-sourced and editable; if someone corrects Nutella's entry, asserting `270 kcal` against the live API would fail for reasons that have nothing to do with our code. The live API is still checked, but for its *contract* — that `status: 1` still comes back and all eight nutriment keys `app.js` reads are still present and numeric. That's the thing that would otherwise break silently.
 - **The harness loads `app.js` as a copied `.mjs`.** This isn't incidental. The repo has no `package.json`, so Node treats a bare `.js` as CommonJS, and the CJS cache keys on filename alone — `?v=` cache-busting is silently ignored, the module never re-executes, and a "reload" test passes by reading stale text. That exact false pass hid a real bug during development. For the same reason, any check that reads rendered text after a reload should scribble a sentinel over it first, so "unchanged" can't masquerade as "correctly re-rendered".
 
-The suite covers the scan-first flow end to end (a stubbed camera and `BarcodeDetector` walk it through home → scanning → loading → results → credited), the tab bar and options menu (including leaving mid-scan, mid-lookup and mid-permission-prompt), where each element lives in the markup, weight validation on the results screen, scaling, kJ→kcal conversion, UPC-A/EAN-13 normalisation in both directions, the daily counter, the daily log (logging from both add routes, delete-decrements-total, zero clamping, and the counter-equals-log-sum invariant), saved quick-add meals (including id collisions under a frozen clock, malformed stored rows, and untrusted product names), persistence (corrupt storage, a throwing `setItem`), reset, and every error path.
+The suite covers the scan-first flow end to end (a stubbed camera and `BarcodeDetector` walk it through home → scanning → loading → results → credited), the tab bar and options menu (including leaving mid-scan, mid-lookup and mid-permission-prompt), where each element lives in the markup, weight validation on the results screen, scaling, kJ→kcal conversion, UPC-A/EAN-13 normalisation in both directions, the daily counter, the daily log (logging from both add routes, delete-decrements-total, zero clamping, and the counter-equals-log-sum invariant), saved quick-add meals (including id collisions under a frozen clock, malformed stored rows, and untrusted product names), teaching the app a product (validation, the network being skipped, UPC-A/EAN-13 matching, fixing one, corrupt and hostile storage), editing a log entry's weight (exact rescaling, no drift over many edits, entries that can't be edited, and an editor left open across the reset time), persistence (corrupt storage, a throwing `setItem`), reset, and every error path.
 
 ## The HTTPS requirement
 
@@ -121,7 +121,7 @@ The goals form carries `novalidate` on purpose. The app does its own validation 
 
 Totals clear by themselves at the start of each logical day (see [Automatic daily reset](#automatic-daily-reset)), or whenever you press **Reset Counter**, which asks for confirmation first.
 
-A mis-tap is undone by removing that entry from Today's Log. The Add button returns straight home, so a double-tap can't land twice.
+A mis-tap is undone by removing that entry from Today's Log, and a wrong weight is fixed by tapping the entry (see [Editing a log entry](#editing-a-log-entry)). The Add button returns straight home, so a double-tap can't land twice.
 
 Two details worth knowing:
 
@@ -141,6 +141,18 @@ The log is written inside `creditTotals()`, the single function both add routes 
 - **The list isn't capped.** It used to scroll inside a ~210px box so it couldn't push the scan button off-screen. Now that it has its own tab, the page just scrolls.
 
 Stored under `nutri-scanner-history`, with the same validation and iOS Private Browsing guards as the other two keys.
+
+Each entry gets its own id when it's logged. A quick-add used to pass the saved meal's id straight through, so two adds of one meal shared a log id, and deleting the newer row actually removed the older one. That went unnoticed while the rows were identical; editing would have exposed it.
+
+## Editing a log entry
+
+Tap an entry in Today's Log to change its weight. The row turns into a small inline form, *Edit Weight for Nutella*, with the current weight filled in. **Save** rescales the entry and moves the totals by the difference; **Cancel** leaves everything as it was. Only one entry is open at a time, and switching tabs closes it.
+
+- **Exact, not approximate.** Entries now store `per100`: the unrounded per-100 g values for all four macros, as read from the product. The new figures are `displayed(scale(per100, weight))`, the same arithmetic a fresh scan at that weight uses. So editing to 100 g gives exactly what scanning 100 g would, and a test checks that.
+- **The counter stays equal to the log.** The totals change by the new value minus the old one, through `displayed()` and clamped at zero, the same way deleting works. A test runs 25 edits through awkward weights and lands back on the original 50 g figures exactly.
+- **Weight rules are the results screen's.** `validWeight()` is shared, so the same inputs are rejected with the same messages.
+- **Not every entry can be edited.** Custom items have no weight to rescale. Entries and quick-adds saved before `per100` existed would have to be worked back from rounded numbers, so they stay read-only; such entries leave the log at the next daily reset anyway. These rows render as plain text, without the ✎.
+- **An editor left open across the reset time does nothing.** Saving checks the day first; if yesterday's log has just been cleared, the editor closes rather than reviving a deleted entry.
 
 ## Automatic daily reset
 
@@ -181,6 +193,18 @@ Custom items have no portion weight, so row labels omit it — `Homemade Soup (2
 
 The name is untrusted input and goes in via `textContent`, capped at 60 characters. A browser test logs a name containing an `onerror` payload and asserts the row has zero child elements and the handler never fired.
 
+## Teaching the app a product
+
+Open Food Facts often lacks local and store-brand products. When a lookup comes back **not found**, or **found with no nutrition data**, the error screen offers **Add Product Details**. Type the name and the per-100 g values from the label, and the app saves them on the phone under that barcode and goes straight to the results screen at 100 g. From then on, scanning that barcode is answered locally, with no network request at all.
+
+- **Stored** under `nutri-scanner-custom-products` as `{ "<barcode>": { name, calories_100g, protein_100g, carbs_100g, fat_100g } }`, loaded once and written on every change. Like saved meals, it still works within a session in iOS Private Browsing.
+- **Same path as any product.** A taught entry is translated into the shape an Open Food Facts product has (via each macro's `nutriment` field in `MACROS`), so results, Add, Save as Quick Add, the log and editing all work unchanged.
+- **Checked before the network, in every barcode form.** A product taught from a 12-digit UPC-A is found when the decoder reports the 13-digit EAN, and the other way round.
+- **Offered only for data gaps.** A network error or a camera fault doesn't show the button. Teaching a product wouldn't fix those.
+- **Validation:** the name and calories are required (`0` kcal is accepted, for water and diet drinks); protein, carbs and fat default to 0. Anything over 1000 kcal or 100 g per 100 g is treated as a typo. For a product found without nutrition data, the form starts with its Open Food Facts name filled in.
+- **Fix Product Details.** Since a taught product never goes back to Open Food Facts, a typo in it would otherwise be permanent. The results screen for a taught product has a **Fix Product Details** link that reopens the form with the saved values filled in and saves over the same entry. Cancel returns to the results.
+- **Untrusted storage.** Malformed entries are dropped one by one, and only all-digit barcodes are accepted as keys, so a stored `__proto__` can't become the object's prototype. Names go in via `textContent`, capped at 60 characters.
+
 ## Manual barcode entry
 
 The home screen has an **Enter Barcode Manually** button. It's there on purpose, not as a nicety: it drives the exact same lookup and calculation path with the camera out of the loop, so when something breaks you can tell which half is at fault. It also rescues barcodes the decoder simply won't read.
@@ -202,6 +226,8 @@ On desktop:
 11. Start a scan, then tap **Log** → the camera light goes off and you stay on Log. Do the same during "Looking up…" → you aren't pulled back to the result.
 12. Open ⋮ and tap elsewhere on the page → the menu closes.
 13. Log something, then ⋮ → Set Reset Time to a minute or two from now. Background the app, wait past that time, come back → totals and the log are cleared, and saved meals and goals are still there. Set it back to `00:00` afterwards.
+14. Manual entry `0000000000000` → **Add Product Details** → fill it in and save → results at 100 g. Look it up again with DevTools → Network open: no request. **Fix Product Details** → change calories → the results update.
+15. Log Nutella at 50 g, open the Log tab, tap the row → change it to 100 g → Save. The row reads `100g (539 kcal, 6.3g)` and the Home totals moved by the difference. A custom item's row has no ✎ and does nothing when tapped.
 
 On both phones:
 

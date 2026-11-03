@@ -1790,6 +1790,259 @@ check("and tapping its field selects it as well", app.el("log-edit-weight").sele
 document.activeElement = null;
 await clearAll();
 
+// ───────────────────────────── insights ───────────────────────────────
+// Finished days are archived before a reset clears them, body weight is kept
+// one reading per day, and the Insights tab charts both. Chart.js itself isn't
+// under test: a fake records the exact data the app hands each chart.
+
+section("insights");
+
+const DAILY_KEY = "nutri-scanner-historical-totals";
+const WEIGHT_KEY = "nutri-scanner-body-weight";
+const storedDaily = () => JSON.parse(app.store.get(DAILY_KEY) || "[]");
+const storedWeights = () => JSON.parse(app.store.get(WEIGHT_KEY) || "[]");
+const startInsights = async (when) => {
+  for (const key of [DAILY_KEY, WEIGHT_KEY, RESET_TIME_KEY, DAY_KEY, TARGETS_KEY]) app.store.delete(key);
+  app.setTime(when);
+  await clearAll();
+};
+const seedTotals = (logicalDay, values) => {
+  app.store.set(TOTALS_KEY, JSON.stringify(values));
+  app.store.set(DAY_KEY, JSON.stringify(logicalDay));
+};
+const dailyRow = (date, calories, targetCalories = 2000) =>
+  ({ date, calories, protein: 100, carbs: 200, fat: 60, targetCalories, targetProtein: 150, targetCarbs: 250, targetFat: 70 });
+const openInsights = async () => {
+  app.click("tab-insights");
+  await wait(0);   // the chart library resolves on the next microtask
+};
+const emptyMessage = (name) => (app.el(`chart-${name}-empty`).hidden ? null : app.el(`chart-${name}-empty`).textContent);
+globalThis.confirm = () => true;
+
+// ── archiving a finished day ──
+
+await startInsights("2026-10-28T10:00");
+seedDay("2026-10-28");
+await app.loadApp();
+app.setTime("2026-10-29T00:05");
+app.returnToApp();
+check("the automatic reset archives the finished day, with that day's goals",
+      JSON.stringify(storedDaily()) === JSON.stringify([{
+        date: "2026-10-28", calories: 270, protein: 3.1, carbs: 28.8, fat: 15.4,
+        targetCalories: 2000, targetProtein: 150, targetCarbs: 250, targetFat: 70,
+      }]),
+      app.store.get(DAILY_KEY));
+check("and still clears the counter afterwards", cleared(), dayState());
+
+seedDay("2026-10-29");
+await app.loadApp();
+app.click("btn-reset-counter");
+check("Reset Counter archives the day too",
+      storedDaily().length === 2 && storedDaily()[1].date === "2026-10-29" && storedDaily()[1].calories === 270,
+      app.store.get(DAILY_KEY));
+
+seedTotals("2026-10-29", { calories: 500, protein: 10, carbs: 50, fat: 20 });
+await app.loadApp();
+app.click("btn-reset-counter");
+check("a second reset on the same date replaces that row rather than adding one",
+      storedDaily().length === 2 && storedDaily()[1].calories === 500, app.store.get(DAILY_KEY));
+
+app.setTime("2026-10-30T09:00");
+app.returnToApp();
+check("a day with nothing logged isn't archived", storedDaily().length === 2, app.store.get(DAILY_KEY));
+
+app.store.set(RESET_TIME_KEY, JSON.stringify("04:00"));
+app.setTime("2026-10-31T01:30");   // still the 30th, logically
+seedDay("2026-10-30");
+await app.loadApp();
+app.setTime("2026-10-31T04:10");
+app.returnToApp();
+check("with a 04:00 reset, a late-night day is filed under its logical date",
+      storedDaily().at(-1).date === "2026-10-30" && storedDaily().length === 3, app.store.get(DAILY_KEY));
+app.store.delete(RESET_TIME_KEY);
+
+app.store.set(TARGETS_KEY, JSON.stringify({ calories: 1800, protein: 140, carbs: 200, fat: 60 }));
+seedDay("2026-10-31");
+await app.loadApp();
+app.click("btn-reset-counter");
+check("the archived goals are the ones in force that day",
+      storedDaily().at(-1).targetCalories === 1800 && storedDaily().at(-1).targetFat === 60,
+      JSON.stringify(storedDaily().at(-1)));
+app.store.delete(TARGETS_KEY);
+
+// ── body weight ──
+
+await startInsights("2026-10-29T12:00");
+await openInsights();
+const logWeight = (value) => {
+  app.el("body-weight").value = String(value);
+  app.el("body-weight-form").listeners.submit({ preventDefault() {} });
+};
+const weightError = () => (app.el("body-weight-error").hidden ? null : app.el("body-weight-error").textContent);
+
+check("with no weight logged, the status says so",
+      app.el("body-weight-status").textContent === "No weight logged today yet.", app.el("body-weight-status").textContent);
+
+for (const bad of ["", "0", "-5", "abc", "999"]) {
+  app.el("body-weight-error").hidden = true;
+  logWeight(bad);
+  check(`weight ${JSON.stringify(bad)} is rejected and nothing is saved`,
+        weightError() !== null && storedWeights().length === 0, `${weightError()} | ${app.store.get(WEIGHT_KEY)}`);
+}
+
+logWeight("80.5");
+check("logging a weight stores it under today's logical date",
+      JSON.stringify(storedWeights()) === JSON.stringify([{ date: "2026-10-29", weight: 80.5 }]), app.store.get(WEIGHT_KEY));
+check("clears the error and the field", weightError() === null && app.el("body-weight").value === "");
+check("and shows it as today's",
+      app.el("body-weight-status").textContent.startsWith("Today: 80.5 kg"), app.el("body-weight-status").textContent);
+
+logWeight("80.1");
+check("logging again the same day overwrites rather than duplicating",
+      JSON.stringify(storedWeights()) === JSON.stringify([{ date: "2026-10-29", weight: 80.1 }]), app.store.get(WEIGHT_KEY));
+
+app.setTime("2026-10-30T07:00");
+logWeight("79.9");
+check("the next day adds a second reading, in date order",
+      storedWeights().map((entry) => `${entry.date}=${entry.weight}`).join() === "2026-10-29=80.1,2026-10-30=79.9",
+      app.store.get(WEIGHT_KEY));
+
+await app.loadApp();
+await openInsights();
+check("weights survive a reload",
+      app.el("body-weight-status").textContent.startsWith("Today: 79.9 kg"), app.el("body-weight-status").textContent);
+
+app.store.set(WEIGHT_KEY, "{not json");
+await app.loadApp();
+await openInsights();
+check("corrupt weight storage loads as empty",
+      app.el("body-weight-status").textContent === "No weight logged today yet.", app.el("body-weight-status").textContent);
+
+// ── navigation ──
+
+await startInsights("2026-10-29T12:00");
+await openInsights();
+check("the Insights tab shows its view alone", showing() === "insights", showing());
+check("and is marked as the current tab", app.activeTab() === "insights", app.activeTab());
+app.click("tab-log");
+check("switching away hides it", showing() === "log" && app.activeTab() === "log", showing());
+
+app.click("tab-home");
+app.click("btn-scan");
+await wait(50);
+check("a scan is running", showing() === "scanning", showing());
+await openInsights();
+camera.showBarcode(NUTELLA_BARCODE);
+await wait(400);
+check("leaving a scan for Insights cancels it", showing() === "insights", showing());
+
+// ── charts, when Chart.js can't load ──
+// No fake yet, so the app tries the real CDN import — which Node refuses.
+
+seedTotals("2026-10-29", { calories: 270, protein: 3.1, carbs: 28.8, fat: 15.4 });
+await app.loadApp();
+await openInsights();
+await wait(50);
+check("without Chart.js, each chart with data says it couldn't load",
+      emptyMessage("macros")?.startsWith("Charts couldn't load") && emptyMessage("week")?.startsWith("Charts couldn't load"),
+      `${emptyMessage("macros")} | ${emptyMessage("week")}`);
+check("while one with no data keeps its own message",
+      emptyMessage("weight") === "Log your weight to see a trend.", emptyMessage("weight"));
+
+// ── charts, with a recording fake ──
+
+const madeCharts = [];
+globalThis.Chart = class {
+  constructor(canvas, config) {
+    this.canvas = canvas;
+    this.config = config;
+    this.destroyed = false;
+    madeCharts.push(this);
+  }
+  destroy() { this.destroyed = true; }
+};
+const liveCharts = () => madeCharts.filter((chart) => !chart.destroyed);
+// The newest: a reload in a real browser discards the page's charts with it,
+// but here the previous module's instances stay in the list, undestroyed.
+const chartOn = (id) => liveCharts().findLast((chart) => chart.canvas.id === id);
+
+await startInsights("2026-10-29T12:00");   // a Thursday
+await openInsights();
+check("with no data at all, every chart shows its empty message and none is built",
+      emptyMessage("macros") === "Nothing logged today yet." && emptyMessage("week") === "Log a day to see your week."
+      && emptyMessage("weight") === "Log your weight to see a trend." && liveCharts().length === 0,
+      `${emptyMessage("macros")} | ${emptyMessage("week")} | ${emptyMessage("weight")} | ${liveCharts().length}`);
+
+app.store.set(DAILY_KEY, JSON.stringify([dailyRow("2026-10-25", 1800, 1900), dailyRow("2026-10-27", 2300)]));
+app.store.set(WEIGHT_KEY, JSON.stringify([{ date: "2026-10-28", weight: 80.4 }, { date: "2026-10-20", weight: 81 }]));
+seedTotals("2026-10-29", { calories: 270, protein: 3.1, carbs: 28.8, fat: 15.4 });
+await app.loadApp();
+await openInsights();
+check("entering Insights builds all three charts", liveCharts().length === 3, `${liveCharts().length} live`);
+
+const donut = chartOn("chart-macros").config;
+check("the donut splits today's energy by macro, in kcal",
+      donut.type === "doughnut" && donut.data.datasets[0].data.join() === "12,115,139",
+      `${donut.type} ${donut.data.datasets[0].data.join()}`);
+check("labelled with each share", donut.data.labels.join() === "Protein 5%,Carbs 43%,Fat 52%", donut.data.labels.join());
+
+const week = chartOn("chart-week").config.data;
+check("the week chart covers seven days ending today",
+      week.labels.join() === "Fri,Sat,Sun,Mon,Tue,Wed,Today", week.labels.join());
+check("archived days in their slots, missing days as gaps, today live",
+      JSON.stringify(week.datasets[0].data) === JSON.stringify([null, null, 1800, null, 2300, null, 270]),
+      JSON.stringify(week.datasets[0].data));
+check("each day against its own goal",
+      JSON.stringify(week.datasets[1].data) === JSON.stringify([null, null, 1900, null, 2000, null, 2000]),
+      JSON.stringify(week.datasets[1].data));
+check("the week chart has a readable summary",
+      app.el("chart-week").attrs["aria-label"].includes("Sun 1800 of 1900 kcal")
+      && app.el("chart-week").attrs["aria-label"].includes("Mon not logged"),
+      app.el("chart-week").attrs["aria-label"]);
+
+const trend = chartOn("chart-weight").config.data;
+check("the weight chart gets readings oldest first",
+      trend.labels.join() === "20 Oct,28 Oct" && trend.datasets[0].data.join() === "81,80.4",
+      `${trend.labels.join()} | ${trend.datasets[0].data.join()}`);
+
+const firstThree = liveCharts();
+app.click("tab-home");
+await openInsights();
+check("re-entering destroys the old charts before building new ones",
+      firstThree.every((chart) => chart.destroyed) && liveCharts().length === 3 && !liveCharts().some((c) => firstThree.includes(c)),
+      `${madeCharts.length} made, ${liveCharts().length} live`);
+
+logWeight("80.2");
+await wait(0);
+check("logging a weight redraws the trend with it",
+      chartOn("chart-weight").config.data.datasets[0].data.join() === "81,80.4,80.2" && liveCharts().length === 3,
+      chartOn("chart-weight").config.data.datasets[0].data.join());
+
+app.store.set(DAILY_KEY, JSON.stringify([
+  dailyRow("2026-10-27", 2300),
+  dailyRow("27/10/2026", 999),
+  { ...dailyRow("2026-10-26", 999), calories: "lots" },
+  null,
+  "junk",
+]));
+await app.loadApp();
+await openInsights();
+check("malformed history rows are dropped one by one",
+      JSON.stringify(chartOn("chart-week").config.data.datasets[0].data) === JSON.stringify([null, null, null, null, 2300, null, 270]),
+      JSON.stringify(chartOn("chart-week").config.data.datasets[0].data));
+
+app.store.set(DAILY_KEY, "{not json");
+await app.loadApp();
+await openInsights();
+check("corrupt history loads as empty",
+      JSON.stringify(chartOn("chart-week").config.data.datasets[0].data) === JSON.stringify([null, null, null, null, null, null, 270]),
+      JSON.stringify(chartOn("chart-week").config.data.datasets[0].data));
+
+delete globalThis.Chart;
+app.click("tab-home");
+app.setTime(null);
+await startInsights(null);
+
 // ──────────────────────── live API contract ───────────────────────────
 // Values aren't asserted — only that the response still has the shape app.js
 // reads. This is what would break silently if Open Food Facts changed its API.

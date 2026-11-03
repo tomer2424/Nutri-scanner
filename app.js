@@ -26,12 +26,21 @@ const HOME_KEY = "nutri-scanner-home";
 const RESET_TIME_KEY = "nutri-scanner-reset-time";
 const DAY_KEY = "nutri-scanner-logical-day";
 const CUSTOM_PRODUCTS_KEY = "nutri-scanner-custom-products";
+const DAILY_HISTORY_KEY = "nutri-scanner-historical-totals";
+const BODY_WEIGHT_KEY = "nutri-scanner-body-weight";
 const DEFAULT_RESET_TIME = "00:00";
 const RESET_TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 const DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const ADDED_FEEDBACK_MS = 800;
 const MAX_MEAL_NAME = 60;
 const MAX_TARGET = 100000;
+const MIN_BODY_WEIGHT = 20;    // kg; outside this is a typo, not a person
+const MAX_BODY_WEIGHT = 400;
+const WEEK_DAYS = 7;
+// Loaded only when Insights is first opened, so a quick scan never waits on it.
+const CHART_MODULE = "https://cdn.jsdelivr.net/npm/chart.js@4.4.1/auto/+esm";
+const WEEKDAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 // The four tracked macros, declared once. Totals, saved meals, log entries,
 // targets and the progress cards all iterate this list, so a metric cannot be
@@ -45,12 +54,17 @@ const MAX_TARGET = 100000;
 //              product is translated back into
 //   max100   — the most a label can sensibly claim per 100 g; anything above is
 //              taken as a typo when teaching a product
+//   kcalPerGram — energy per gram, for the Insights macro split; calories
+//              themselves have none
 const MACROS = [
-  { key: "calories", source: "kcal",          label: "Calories", unit: "kcal", decimals: 0, fallback: 2000, onHome: true,  nutriment: "energy-kcal_100g",   max100: 1000 },
-  { key: "protein",  source: "proteins",      label: "Protein",  unit: "g",    decimals: 1, fallback: 150,  onHome: true,  nutriment: "proteins_100g",      max100: 100 },
-  { key: "carbs",    source: "carbohydrates", label: "Carbs",    unit: "g",    decimals: 1, fallback: 250,  onHome: false, nutriment: "carbohydrates_100g", max100: 100 },
-  { key: "fat",      source: "fat",           label: "Fat",      unit: "g",    decimals: 1, fallback: 70,   onHome: false, nutriment: "fat_100g",           max100: 100 },
+  { key: "calories", source: "kcal",          label: "Calories", unit: "kcal", decimals: 0, fallback: 2000, onHome: true,  nutriment: "energy-kcal_100g",   max100: 1000, kcalPerGram: null },
+  { key: "protein",  source: "proteins",      label: "Protein",  unit: "g",    decimals: 1, fallback: 150,  onHome: true,  nutriment: "proteins_100g",      max100: 100,  kcalPerGram: 4 },
+  { key: "carbs",    source: "carbohydrates", label: "Carbs",    unit: "g",    decimals: 1, fallback: 250,  onHome: false, nutriment: "carbohydrates_100g", max100: 100,  kcalPerGram: 4 },
+  { key: "fat",      source: "fat",           label: "Fat",      unit: "g",    decimals: 1, fallback: 70,   onHome: false, nutriment: "fat_100g",           max100: 100,  kcalPerGram: 9 },
 ];
+
+// "targetCalories", "targetProtein"… — the goal fields in a daily history row.
+const targetKey = (macro) => `target${macro.label}`;
 
 const zeroTotals = () => Object.fromEntries(MACROS.map((m) => [m.key, 0]));
 
@@ -112,12 +126,16 @@ const els = {
   btnErrorReset: $("btn-error-reset"),
   btnTeach: $("btn-teach"),
   diagnostics: $("diagnostics"),
+  bodyWeightForm: $("body-weight-form"),
+  bodyWeightInput: $("body-weight"),
+  bodyWeightError: $("body-weight-error"),
+  bodyWeightStatus: $("body-weight-status"),
   crop: $("crop"),
 };
 
 // Bottom-nav tabs. Each one is a <button id="tab-NAME"> in the nav bar and a
 // <section id="view-NAME">; adding a tab is one entry here plus that markup.
-const TABS = ["home", "log"];
+const TABS = ["home", "log", "insights"];
 const VIEWS = [...TABS, "scanning", "loading", "results", "error", "teach"];
 
 let view = "home";
@@ -142,6 +160,11 @@ let teachCode = null;
 let teachName = "";
 let teachKey = null;
 let editingId = null;    // the log entry whose weight is being edited
+let dailyHistory = [];   // one row per finished logical day, oldest first
+let bodyWeights = [];    // one { date, weight } per logical day, oldest first
+let charts = [];         // live Chart.js instances on the Insights tab
+let chartLib = null;     // the pending or loaded Chart.js import
+let insightsRender = 0;  // bumped per render, so a slow chart load can't paint a stale one
 let addedTimer = null;
 let mealAddedTimer = null;
 let customTimer = null;
@@ -167,6 +190,7 @@ function setState(name) {
     renderMeals();
     renderHistory();
   }
+  if (name === "insights") renderInsights();
 }
 
 // `teachable` offers Add Product Details, for the two errors that are a gap in
@@ -892,8 +916,10 @@ function addToTotal() {
 }
 
 // Shared by Reset Counter and the automatic daily reset. Saved meals and
-// targets are settings, not daily data, so neither is touched.
+// targets are settings, not daily data, so neither is touched. The day is
+// archived first, and both resets come through here, so neither can skip it.
 function clearDay() {
+  archiveDay();
   totals = zeroTotals();
   saveTotals();
   history = [];
@@ -905,6 +931,7 @@ function clearDay() {
 function resetCounter() {
   if (!confirm("Are you sure you want to reset today's totals and log?")) return;
   clearDay();
+  if (view === "insights") renderInsights();
 }
 
 // ─────────────────────── automatic daily reset ────────────────
@@ -947,11 +974,14 @@ function checkDay() {
   // earlier day means the clock or the reset time moved back: clearing would
   // throw away today's entries, so the day is restamped and the next boundary
   // clears it as usual.
-  if (day !== null && today > day) clearDay();
+  const cleared = day !== null && today > day;
+  if (cleared) clearDay();
   if (today !== day) {
     day = today;
     writeStored(DAY_KEY, day);
   }
+  // After `day` moves, so the week chart ends on the new day.
+  if (cleared && view === "insights") renderInsights();
 }
 
 // ────────────────────── saved quick-add meals ─────────────────
@@ -1574,6 +1604,318 @@ function renderHistory() {
   els.logList.replaceChildren(...history.slice().reverse().map(historyRow));
 }
 
+// ───────────────────────── daily history ──────────────────────
+// Each finished day's totals, with the goals that applied that day, so the
+// Insights week chart can show how a past day went against its own target.
+
+const byDate = (a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
+
+// One row per date: a later save for the same date replaces the earlier one.
+// Reset Counter mid-day and the automatic reset that night would otherwise
+// leave two rows for one date, and the week chart would count it twice.
+const upsertByDate = (rows, row) => [...rows.filter((r) => r.date !== row.date), row].sort(byDate);
+
+function isDailyRecord(row) {
+  return !!row && typeof row.date === "string" && DAY_PATTERN.test(row.date)
+    && MACROS.every((macro) => Number.isFinite(row[macro.key]) && Number.isFinite(row[targetKey(macro)]));
+}
+
+function loadDailyHistory() {
+  const parsed = readStored(DAILY_HISTORY_KEY);
+  return Array.isArray(parsed) ? parsed.filter(isDailyRecord).sort(byDate) : [];
+}
+
+// Runs just before clearDay() wipes the totals, while `day` still names the
+// day they belong to — the logical day, so a 01:00 snack with a 04:00 reset is
+// filed under the evening before. A day with nothing logged is skipped: zero
+// means "didn't track", and the week chart shows it as a gap, not a zero bar.
+function archiveDay() {
+  if (day === null || MACROS.every((macro) => !(totals[macro.key] > 0))) return;
+  const record = { date: day };
+  for (const macro of MACROS) record[macro.key] = totals[macro.key] || 0;
+  for (const macro of MACROS) record[targetKey(macro)] = targets[macro.key];
+  dailyHistory = upsertByDate(dailyHistory, record);
+  writeStored(DAILY_HISTORY_KEY, dailyHistory);
+}
+
+// ───────────────────────── body weight ────────────────────────
+// One reading per logical day, in kg. Logging again the same day replaces it.
+
+function isWeightEntry(entry) {
+  return !!entry && typeof entry.date === "string" && DAY_PATTERN.test(entry.date)
+    && Number.isFinite(entry.weight) && entry.weight >= MIN_BODY_WEIGHT && entry.weight <= MAX_BODY_WEIGHT;
+}
+
+function loadBodyWeights() {
+  const parsed = readStored(BODY_WEIGHT_KEY);
+  return Array.isArray(parsed) ? parsed.filter(isWeightEntry).sort(byDate) : [];
+}
+
+function readBodyWeight() {
+  const raw = els.bodyWeightInput.value.trim();
+  if (raw === "") return { error: "Enter your weight in kg." };
+
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return { error: "That isn't a number — enter your weight in kg." };
+  if (value < MIN_BODY_WEIGHT || value > MAX_BODY_WEIGHT) {
+    return { error: `Enter a weight between ${MIN_BODY_WEIGHT} and ${MAX_BODY_WEIGHT} kg.` };
+  }
+  return { value };
+}
+
+function logBodyWeight(event) {
+  event.preventDefault();
+
+  const { value, error } = readBodyWeight();
+  if (error) {
+    els.bodyWeightError.textContent = error;
+    els.bodyWeightError.hidden = false;
+    els.bodyWeightInput.focus();
+    return;
+  }
+
+  // A tab left open past the reset time would otherwise file this under
+  // yesterday.
+  checkDay();
+  els.bodyWeightError.hidden = true;
+  bodyWeights = upsertByDate(bodyWeights, { date: day, weight: value });
+  writeStored(BODY_WEIGHT_KEY, bodyWeights);
+  els.bodyWeightInput.value = "";
+  renderInsights();
+}
+
+// ─────────────────────────── insights ─────────────────────────
+// The data each chart is drawn from is prepared here, apart from Chart.js, so
+// the test suite can check exactly what each chart is handed.
+
+// Today's protein, carbs and fat as shares of their energy. Null when there's
+// nothing to split.
+function macroBreakdown() {
+  const parts = MACROS.filter((macro) => macro.kcalPerGram).map((macro) => ({
+    key: macro.key,
+    label: macro.label,
+    grams: totals[macro.key] || 0,
+    kcal: Math.round((totals[macro.key] || 0) * macro.kcalPerGram),
+  }));
+  return parts.some((part) => part.kcal > 0) ? parts : null;
+}
+
+// The seven logical days ending today. Past days come from the archive, each
+// against the goal it had that day; a day with no record is null, a gap rather
+// than a zero. Today is the live running total.
+function weeklySeries() {
+  const [year, month, date] = day.split("-").map(Number);
+  const series = { dates: [], labels: [], consumed: [], target: [] };
+  for (let back = WEEK_DAYS - 1; back >= 0; back--) {
+    const when = new Date(year, month - 1, date - back);
+    const key = dateKey(when);
+    series.dates.push(key);
+    if (back === 0) {
+      series.labels.push("Today");
+      series.consumed.push(totals.calories || 0);
+      series.target.push(targets.calories);
+      continue;
+    }
+    const record = dailyHistory.find((row) => row.date === key);
+    series.labels.push(WEEKDAY_NAMES[when.getDay()]);
+    series.consumed.push(record ? record.calories : null);
+    series.target.push(record ? record.targetCalories : null);
+  }
+  return series;
+}
+
+const shortDate = (key) => {
+  const [, month, date] = key.split("-").map(Number);
+  return `${date} ${MONTH_NAMES[month - 1]}`;
+};
+
+function weightSeries() {
+  return {
+    dates: bodyWeights.map((entry) => entry.date),
+    labels: bodyWeights.map((entry) => shortDate(entry.date)),
+    values: bodyWeights.map((entry) => entry.weight),
+  };
+}
+
+// A Chart already on the page wins over the CDN copy. Nothing in the app
+// defines one; the test suite does, with a fake that records what it's given.
+// A failed import is forgotten, so the next visit to Insights tries again.
+function loadChartLib() {
+  if (globalThis.Chart) return Promise.resolve(globalThis.Chart);
+  chartLib ??= import(CHART_MODULE)
+    .then((module) => module.default)
+    .catch((err) => {
+      chartLib = null;
+      throw err;
+    });
+  return chartLib;
+}
+
+// The palette lives in CSS, light and dark, so the charts follow the theme.
+function chartColors() {
+  const style = getComputedStyle(document.documentElement);
+  const token = (name) => style.getPropertyValue(name).trim();
+  return {
+    accent: token("--accent"),
+    muted: token("--muted"),
+    text: token("--text"),
+    border: token("--border"),
+    surface: token("--surface"),
+    protein: token("--chart-protein"),
+    carbs: token("--chart-carbs"),
+    fat: token("--chart-fat"),
+  };
+}
+
+// Shows the chart's canvas, or a message in its place.
+function setChartState(name, message) {
+  $(`chart-${name}-box`).hidden = !!message;
+  $(`chart-${name}-empty`).textContent = message || "";
+  $(`chart-${name}-empty`).hidden = !message;
+}
+
+function axes(colors) {
+  return {
+    // Level labels: at phone width Chart.js would otherwise tilt seven weekdays.
+    x: { ticks: { color: colors.muted, maxRotation: 0, autoSkipPadding: 8 }, grid: { display: false } },
+    y: { beginAtZero: true, ticks: { color: colors.muted }, grid: { color: colors.border } },
+  };
+}
+
+function macrosChart(parts, colors) {
+  const totalKcal = parts.reduce((sum, part) => sum + part.kcal, 0);
+  const share = (part) => Math.round((part.kcal / totalKcal) * 100);
+  return {
+    type: "doughnut",
+    data: {
+      labels: parts.map((part) => `${part.label} ${share(part)}%`),
+      datasets: [{
+        data: parts.map((part) => part.kcal),
+        backgroundColor: parts.map((part) => colors[part.key]),
+        borderColor: colors.surface,
+        borderWidth: 2,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      cutout: "60%",
+      plugins: {
+        legend: { position: "bottom", labels: { color: colors.text, boxWidth: 12 } },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => ` ${format(parts[ctx.dataIndex].grams, 1)} g · ${parts[ctx.dataIndex].kcal} kcal`,
+          },
+        },
+      },
+    },
+  };
+}
+
+function weekChart(week, colors) {
+  const scales = axes(colors);
+  scales.x.ticks.autoSkip = false;   // seven short labels fit; skipping would hide days
+  return {
+    type: "bar",
+    data: {
+      labels: week.labels,
+      datasets: [
+        { type: "bar", label: "Eaten (kcal)", data: week.consumed, backgroundColor: colors.accent, borderRadius: 4, order: 2 },
+        {
+          type: "line", label: "Goal", data: week.target, borderColor: colors.muted,
+          borderDash: [5, 4], borderWidth: 2, pointRadius: 0, spanGaps: true, order: 1,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales,
+      plugins: { legend: { labels: { color: colors.text, boxWidth: 12 } } },
+    },
+  };
+}
+
+function weightChart(weights, colors) {
+  const scales = axes(colors);
+  scales.y.beginAtZero = false;   // a few kg of change would be a flat line from zero
+  return {
+    type: "line",
+    data: {
+      labels: weights.labels,
+      datasets: [{
+        label: "Weight (kg)",
+        data: weights.values,
+        borderColor: colors.accent,
+        backgroundColor: colors.accent,
+        borderWidth: 2,
+        pointRadius: 3,
+        tension: 0.25,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales,
+      plugins: { legend: { display: false } },
+    },
+  };
+}
+
+// Every visit to the tab rebuilds all three charts from fresh data: the old
+// instances are destroyed first, since Chart.js refuses to draw twice on one
+// canvas and would otherwise keep stale data alive.
+async function renderInsights() {
+  const mine = ++insightsRender;
+  for (const chart of charts) chart.destroy();
+  charts = [];
+
+  const todays = bodyWeights.find((entry) => entry.date === day);
+  els.bodyWeightStatus.textContent = todays
+    ? `Today: ${format(todays.weight, 1)} kg. Logging again replaces it.`
+    : "No weight logged today yet.";
+
+  const parts = macroBreakdown();
+  const week = weeklySeries();
+  const weights = weightSeries();
+  const hasWeek = week.consumed.some((value) => value > 0);
+
+  setChartState("macros", parts ? null : "Nothing logged today yet.");
+  setChartState("week", hasWeek ? null : "Log a day to see your week.");
+  setChartState("weight", weights.values.length ? null : "Log your weight to see a trend.");
+
+  // Canvases are invisible to screen readers, so each one says what it shows.
+  if (parts) {
+    $("chart-macros").setAttribute("aria-label",
+      `Today's macros: ${parts.map((part) => `${part.label} ${format(part.grams, 1)} g`).join(", ")}`);
+  }
+  $("chart-week").setAttribute("aria-label", `Calories this week: ${week.labels.map((label, i) =>
+    `${label} ${week.consumed[i] === null ? "not logged" : `${week.consumed[i]} of ${week.target[i]} kcal`}`).join(", ")}`);
+  $("chart-weight").setAttribute("aria-label", `Body weight: ${weights.labels.map((label, i) =>
+    `${label} ${format(weights.values[i], 1)} kg`).join(", ")}`);
+
+  if (!parts && !hasWeek && !weights.values.length) return;
+
+  let Chart;
+  try {
+    Chart = await loadChartLib();
+  } catch {
+    if (mine !== insightsRender) return;
+    const offline = "Charts couldn't load. Check your connection and open Insights again.";
+    if (parts) setChartState("macros", offline);
+    if (hasWeek) setChartState("week", offline);
+    if (weights.values.length) setChartState("weight", offline);
+    return;
+  }
+  // Left the tab, or a newer render started, while the library was loading.
+  if (mine !== insightsRender || view !== "insights") return;
+
+  const colors = chartColors();
+  if (parts) charts.push(new Chart($("chart-macros"), macrosChart(parts, colors)));
+  if (hasWeek) charts.push(new Chart($("chart-week"), weekChart(week, colors)));
+  if (weights.values.length) charts.push(new Chart($("chart-weight"), weightChart(weights, colors)));
+}
+
 // ───────────────────────── interactions ───────────────────────
 
 // Ends whatever the scan flow was doing and lands on a tab — Home unless told
@@ -1649,6 +1991,7 @@ els.btnFixProduct.addEventListener("click", () => {
   openTeachForm();
 });
 els.teachForm.addEventListener("submit", submitTeach);
+els.bodyWeightForm.addEventListener("submit", logBodyWeight);
 els.btnTeachCancel.addEventListener("click", cancelTeach);
 els.btnAddTotal.addEventListener("click", addToTotal);
 els.btnSaveMeal.addEventListener("click", saveMeal);
@@ -1718,6 +2061,8 @@ totals = loadTotals();
 meals = loadMeals();
 history = loadHistory();
 taught = loadTaught();
+dailyHistory = loadDailyHistory();
+bodyWeights = loadBodyWeights();
 resetTime = loadResetTime();
 day = loadDay();
 checkDay();

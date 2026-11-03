@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const APP_PATH = fileURLToPath(new URL("../app.js", import.meta.url));
-const VIEWS = ["home", "log", "scanning", "loading", "results", "error", "teach"];
+const VIEWS = ["home", "log", "insights", "scanning", "loading", "results", "error", "teach"];
 
 // `register` mirrors a real DOM closely enough for our purposes: an element
 // becomes findable by getElementById as soon as it is given an id, including
@@ -77,6 +77,7 @@ export function install() {
   globalThis.document = {
     hidden: false,
     activeElement: null,
+    documentElement: {},
     getElementById: el,
     createElement: () => makeElement(undefined, register),
     addEventListener(type, fn) { documentListeners[type] = fn; },
@@ -90,6 +91,9 @@ export function install() {
   };
 
   globalThis.confirm = () => true;
+
+  // The Insights charts read their colours from CSS custom properties.
+  globalThis.getComputedStyle = () => ({ getPropertyValue: () => "" });
 
   // A settable clock. app.js only reads the time through `new Date()` and
   // Date.now(), so swapping the global class is enough. Until setTime() is
@@ -170,7 +174,7 @@ export function install() {
       documentListeners.visibilitychange?.();
     },
     /** Which bottom-nav tab is marked current. */
-    activeTab: () => ["home", "log"].filter((t) => el(`tab-${t}`).attrs["aria-current"] === "page").join(),
+    activeTab: () => ["home", "log", "insights"].filter((t) => el(`tab-${t}`).attrs["aria-current"] === "page").join(),
     /**
      * Fakes a working camera and a native BarcodeDetector that sees nothing
      * until showBarcode() is called. Install before loadApp(): the detector is

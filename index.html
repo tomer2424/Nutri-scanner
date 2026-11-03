@@ -166,6 +166,40 @@
     </div>
   </section>
 
+  <!-- ─────────── INSIGHTS ─────────── -->
+  <!-- Charts are drawn by Chart.js, imported by app.js the first time this tab
+       opens. Each canvas has a message in its place when there's no data. -->
+  <section id="view-insights" class="view" hidden>
+    <form id="body-weight-form" class="insights-card" novalidate>
+      <h2 class="meals-title">Body Weight</h2>
+      <div class="weight-row">
+        <input id="body-weight" class="text-input" type="number" inputmode="decimal" min="0" step="any"
+               placeholder="kg" aria-label="Body weight in kg" enterkeyhint="done">
+        <button class="btn btn-primary" type="submit">Log Weight Today</button>
+      </div>
+      <p id="body-weight-error" class="error-text" role="alert" hidden></p>
+      <p id="body-weight-status" class="hint targets-hint" role="status"></p>
+    </form>
+
+    <div class="insights-card">
+      <h2 class="meals-title">Today's Macros</h2>
+      <div id="chart-macros-box" class="chart-box chart-box-donut"><canvas id="chart-macros" role="img"></canvas></div>
+      <p id="chart-macros-empty" class="hint chart-empty" hidden></p>
+    </div>
+
+    <div class="insights-card">
+      <h2 class="meals-title">Calories This Week</h2>
+      <div id="chart-week-box" class="chart-box"><canvas id="chart-week" role="img"></canvas></div>
+      <p id="chart-week-empty" class="hint chart-empty" hidden></p>
+    </div>
+
+    <div class="insights-card">
+      <h2 class="meals-title">Weight Trend</h2>
+      <div id="chart-weight-box" class="chart-box"><canvas id="chart-weight" role="img"></canvas></div>
+      <p id="chart-weight-empty" class="hint chart-empty" hidden></p>
+    </div>
+  </section>
+
   <!-- ─────────── SCANNING ─────────── -->
   <section id="view-scanning" class="view" hidden>
     <div class="viewfinder">
@@ -286,6 +320,14 @@
         <path d="M9 10h6M9 14h6M9 18h3"/>
       </svg>
       <span>Log</span>
+    </button>
+    <button id="tab-insights" class="tab" type="button">
+      <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 4v16h16"/>
+        <path d="m7 15 4-4 3 3 5-6"/>
+      </svg>
+      <span>Insights</span>
     </button>
   </div>
 </nav>

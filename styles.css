@@ -8,6 +8,11 @@
   --accent-text: #ffffff;
   --danger: #b91c1c;
   --danger-bg: #fef2f2;
+  /* Macro hues for the Insights charts. The progress bars are all --accent,
+     which can't tell three slices apart. */
+  --chart-protein: #2563eb;
+  --chart-carbs: #d97706;
+  --chart-fat: #db2777;
   --radius: 14px;
   --topbar-height: 56px;
   --tabbar-height: 60px;
@@ -24,6 +29,9 @@
     --accent-text: #08130c;
     --danger: #fca5a5;
     --danger-bg: #2a1616;
+    --chart-protein: #60a5fa;
+    --chart-carbs: #fbbf24;
+    --chart-fat: #f472b6;
   }
 }
 
@@ -453,6 +461,30 @@ body {
 }
 
 .meal-delete:active { color: var(--danger); border-color: var(--danger); }
+
+/* ── insights ── */
+
+.insights-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.weight-row { display: flex; gap: 8px; }
+.weight-row .text-input { flex: 1; min-width: 0; }
+.weight-row .btn { flex: 0 0 auto; padding-inline: 16px; }
+
+/* Chart.js sizes its canvas to this box (maintainAspectRatio: false), so the
+   box sets the height and min-width: 0 lets it shrink with the column instead
+   of pushing the page sideways. */
+.chart-box { position: relative; height: 220px; min-width: 0; }
+.chart-box-donut { height: 240px; }
+.chart-empty { text-align: left; }
 
 /* ── viewfinder ── */
 

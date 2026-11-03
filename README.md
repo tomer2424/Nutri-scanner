@@ -18,8 +18,8 @@ python -m http.server 8000
 ## Tests
 
 ```bash
-node test/run.mjs             # 369 checks, including the live API contract
-node test/run.mjs --offline   # 365 checks, no network needed
+node test/run.mjs             # 409 checks, including the live API contract
+node test/run.mjs --offline   # 405 checks, no network needed
 ```
 
 No dependencies and no test framework — just Node. `app.js` exports nothing and touches the DOM at load, so [test/harness.mjs](test/harness.mjs) stubs the handful of browser APIs it uses, imports **the real file**, fires the listeners it registered, and reads back what it rendered. Nothing in the suite reimplements the app's logic, so a check passing means the shipped code works.
@@ -29,7 +29,7 @@ Two deliberate choices worth knowing before you extend it:
 - **Arithmetic runs against a recorded fixture**, not the live database. Open Food Facts is crowd-sourced and editable; if someone corrects Nutella's entry, asserting `270 kcal` against the live API would fail for reasons that have nothing to do with our code. The live API is still checked, but for its *contract* — that `status: 1` still comes back and all eight nutriment keys `app.js` reads are still present and numeric. That's the thing that would otherwise break silently.
 - **The harness loads `app.js` as a copied `.mjs`.** This isn't incidental. The repo has no `package.json`, so Node treats a bare `.js` as CommonJS, and the CJS cache keys on filename alone — `?v=` cache-busting is silently ignored, the module never re-executes, and a "reload" test passes by reading stale text. That exact false pass hid a real bug during development. For the same reason, any check that reads rendered text after a reload should scribble a sentinel over it first, so "unchanged" can't masquerade as "correctly re-rendered".
 
-The suite covers the scan-first flow end to end (a stubbed camera and `BarcodeDetector` walk it through home → scanning → loading → results → credited), the tab bar and options menu (including leaving mid-scan, mid-lookup and mid-permission-prompt), where each element lives in the markup, weight validation on the results screen, scaling, kJ→kcal conversion, UPC-A/EAN-13 normalisation in both directions, the daily counter, the daily log (logging from both add routes, delete-decrements-total, zero clamping, and the counter-equals-log-sum invariant), saved quick-add meals (including id collisions under a frozen clock, malformed stored rows, and untrusted product names), teaching the app a product (validation, the network being skipped, UPC-A/EAN-13 matching, fixing one, corrupt and hostile storage), editing a log entry's weight (exact rescaling, no drift over many edits, entries that can't be edited, and an editor left open across the reset time), persistence (corrupt storage, a throwing `setItem`), reset, and every error path.
+The suite covers the scan-first flow end to end (a stubbed camera and `BarcodeDetector` walk it through home → scanning → loading → results → credited), the tab bar and options menu (including leaving mid-scan, mid-lookup and mid-permission-prompt), where each element lives in the markup, weight validation on the results screen, scaling, kJ→kcal conversion, UPC-A/EAN-13 normalisation in both directions, the daily counter, the daily log (logging from both add routes, delete-decrements-total, zero clamping, and the counter-equals-log-sum invariant), saved quick-add meals (including id collisions under a frozen clock, malformed stored rows, and untrusted product names), teaching the app a product (validation, the network being skipped, UPC-A/EAN-13 matching, fixing one, corrupt and hostile storage), editing a log entry's weight (exact rescaling, no drift over many edits, entries that can't be edited, and an editor left open across the reset time), Insights (archiving a finished day on both resets, one row per date, body-weight logging and validation, the data handed to each chart via a recording fake, and the message when Chart.js can't load), persistence (corrupt storage, a throwing `setItem`), reset, and every error path.
 
 ## The HTTPS requirement
 
@@ -85,14 +85,15 @@ The wasm decoder is fetched from jsDelivr on first load (~1 MB) and warmed up be
 
 ## Layout and navigation
 
-A fixed top bar carries the app name and a **⋮** options menu (**Edit Goals**, **Set Reset Time**, **Reset Counter**); a click anywhere outside the menu closes it. A fixed bottom nav switches between two tabs:
+A fixed top bar carries the app name and a **⋮** options menu (**Edit Goals**, **Set Reset Time**, **Reset Counter**); a click anywhere outside the menu closes it. A fixed bottom nav switches between three tabs:
 
 - **Home** — the macro cards you've picked (Calories and Protein by default), then **Scan Barcode**, **Enter Barcode Manually** and **Add Custom Item**. Nothing else.
 - **Log** — Saved Meals (quick-adds) on top, Today's Log below.
+- **Insights** — body-weight logging, then charts of today's macros, the week's calories and your weight trend. See [Insights](#insights).
 
 Both bars sit outside every view, so they stay put whatever screen you're on. The scan flow (scanning, loading, results, errors) belongs to Home, so that tab stays lit through it.
 
-Tabs are declared once in a `TABS` list in [app.js](app.js). Adding a third: an entry there, a `<button id="tab-NAME">` in the nav, and a `<section id="view-NAME">`. The tabs share the bar's width equally, so no CSS changes.
+Tabs are declared once in a `TABS` list in [app.js](app.js). Adding another: an entry there, a `<button id="tab-NAME">` in the nav, and a `<section id="view-NAME">`. The tabs share the bar's width equally, so no CSS changes.
 
 Some behaviour to know before you change it:
 
@@ -205,6 +206,36 @@ Open Food Facts often lacks local and store-brand products. When a lookup comes 
 - **Fix Product Details.** Since a taught product never goes back to Open Food Facts, a typo in it would otherwise be permanent. The results screen for a taught product has a **Fix Product Details** link that reopens the form with the saved values filled in and saves over the same entry. Cancel returns to the results.
 - **Untrusted storage.** Malformed entries are dropped one by one, and only all-digit barcodes are accepted as keys, so a stored `__proto__` can't become the object's prototype. Names go in via `textContent`, capped at 60 characters.
 
+## Insights
+
+The third tab. A **Log Weight Today** form at the top, then three charts:
+
+- **Today's Macros** — a donut of protein, carbs and fat as shares of their energy (×4, ×4 and ×9 kcal per gram), labelled with percentages; the tooltip gives grams and kcal.
+- **Calories This Week** — the seven logical days ending today: bars for what you ate, a dashed line for the goal. Each past day is measured against the goal it had *that* day, so changing your goals doesn't rewrite history. Today is the live running total.
+- **Weight Trend** — every body-weight reading, oldest first.
+
+Each chart shows a short message instead when it has nothing to draw, and each canvas carries an `aria-label` summarising its data, since a canvas is invisible to screen readers.
+
+### Where the data comes from
+
+- **`nutri-scanner-historical-totals`** — one row per finished day: `{ date, calories, protein, carbs, fat, targetCalories, targetProtein, targetCarbs, targetFat }`. `archiveDay()` writes it at the top of `clearDay()`, the one function both the automatic reset and Reset Counter go through, so neither can skip it. The date is the **logical** day, so with a 04:00 reset a 01:00 snack is filed under the evening before.
+- **`nutri-scanner-body-weight`** — `{ date, weight }` in kg, one per logical day. Logging again the same day replaces that day's reading, and the form says so. 20–400 kg is accepted; anything else is treated as a typo.
+
+Both are loaded once, validated row by row (a bad row is dropped on its own), kept sorted by date, and written on change, with the same iOS Private Browsing behaviour as the other keys.
+
+### Choices that differ from the PRD
+
+- **Chart.js is loaded when Insights first opens**, as an ES module from jsDelivr (`chart.js@4.4.1/auto/+esm`), not with a `<script>` tag in `index.html`. A tag would make every launch wait on ~200 KB, even for a quick scan. If the import fails (offline), each chart with data says "Charts couldn't load", the weight form still works, and the next visit retries.
+- **One history row per date.** Reset Counter at lunchtime and the automatic reset that night would otherwise leave two rows for one day, and the week chart would count it twice. A later archive of the same date replaces the earlier one.
+- **Days with nothing logged aren't archived.** Zero means "didn't track", not "ate nothing", so the week chart shows those days as gaps rather than zero bars.
+- **Kilograms only.** There's no units preference yet; adding pounds means storing in one unit and converting for display.
+
+### Rendering
+
+Every visit to the tab rebuilds all three charts from fresh data, destroying the previous instances first (Chart.js refuses to draw twice on one canvas). Logging a weight rebuilds them too. A render bumps a counter, so a slow library load can't paint a render that's already been superseded, or paint after you've left the tab. Colours come from CSS custom properties (`--chart-protein`, `--chart-carbs`, `--chart-fat`, plus `--accent` and `--muted`), with dark-mode variants, read through `getComputedStyle`. Each canvas sits in a fixed-height `.chart-box` with `maintainAspectRatio: false`, so the charts fit a 375 px screen without sideways scrolling.
+
+**Testing:** the loader uses `globalThis.Chart` when one exists. The app never defines it; the test suite installs a fake that records each chart's config, so the checks assert on exactly the data the shipped code hands Chart.js.
+
 ## Manual barcode entry
 
 The home screen has an **Enter Barcode Manually** button. It's there on purpose, not as a nicety: it drives the exact same lookup and calculation path with the camera out of the loop, so when something breaks you can tell which half is at fault. It also rescues barcodes the decoder simply won't read.
@@ -228,6 +259,8 @@ On desktop:
 13. Log something, then ⋮ → Set Reset Time to a minute or two from now. Background the app, wait past that time, come back → totals and the log are cleared, and saved meals and goals are still there. Set it back to `00:00` afterwards.
 14. Manual entry `0000000000000` → **Add Product Details** → fill it in and save → results at 100 g. Look it up again with DevTools → Network open: no request. **Fix Product Details** → change calories → the results update.
 15. Log Nutella at 50 g, open the Log tab, tap the row → change it to 100 g → Save. The row reads `100g (539 kcal, 6.3g)` and the Home totals moved by the difference. A custom item's row has no ✎ and does nothing when tapped.
+16. Log something, open **Insights** → the donut and today's bar show it. Log a weight, then a different one → the status shows the second and the trend has one point for today. Turn on dark mode → the charts change colour with the page. At phone width nothing scrolls sideways.
+17. Set the reset time a minute ahead, wait past it with something logged, return to the app → that day appears as a bar in the week chart.
 
 On both phones:
 

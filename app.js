@@ -183,6 +183,12 @@ function setState(name) {
     else $(`tab-${tab}`).removeAttribute("aria-current");
   }
 
+  // Everything in the ⋮ menu acts on the Home screen, so it's only offered
+  // there. Closed on the way out, so it can't reappear already open.
+  const onHome = name === "home";
+  els.btnOptions.hidden = !onHome;
+  if (!onHome) closeMenu();
+
   // Saving a meal from the results screen doesn't repaint the list, since it
   // isn't on screen. Every route into the Log tab passes through here, so the
   // lists can't go stale via a path that forgot to refresh them.

@@ -18,8 +18,8 @@ python -m http.server 8000
 ## Tests
 
 ```bash
-node test/run.mjs             # 409 checks, including the live API contract
-node test/run.mjs --offline   # 405 checks, no network needed
+node test/run.mjs             # 415 checks, including the live API contract
+node test/run.mjs --offline   # 411 checks, no network needed
 ```
 
 No dependencies and no test framework — just Node. `app.js` exports nothing and touches the DOM at load, so [test/harness.mjs](test/harness.mjs) stubs the handful of browser APIs it uses, imports **the real file**, fires the listeners it registered, and reads back what it rendered. Nothing in the suite reimplements the app's logic, so a check passing means the shipped code works.
@@ -85,7 +85,7 @@ The wasm decoder is fetched from jsDelivr on first load (~1 MB) and warmed up be
 
 ## Layout and navigation
 
-A fixed top bar carries the app name and a **⋮** options menu (**Edit Goals**, **Set Reset Time**, **Reset Counter**); a click anywhere outside the menu closes it. A fixed bottom nav switches between three tabs:
+A fixed top bar carries the app name and, on the Home screen, a **⋮** options menu (**Edit Goals**, **Set Reset Time**, **Reset Counter**); a click anywhere outside the menu closes it. A fixed bottom nav switches between three tabs:
 
 - **Home** — the macro cards you've picked (Calories and Protein by default), then **Scan Barcode**, **Enter Barcode Manually** and **Add Custom Item**. Nothing else.
 - **Log** — Saved Meals (quick-adds) on top, Today's Log below.
@@ -99,7 +99,7 @@ Some behaviour to know before you change it:
 
 - **Leaving the scan flow through the nav cancels it.** Every tab switch goes through `reset()`, which stops the camera and bumps a `flow` counter. A camera start or a lookup that's still awaiting checks the counter when it resumes and drops its result. Without that, a lookup answering after you'd moved to Log would yank you back to results, and a camera permission granted after you left would start scanning behind the Log screen with the camera light on. Tests cover both.
 - **Re-tapping the tab you're on does nothing**, so it can't wipe a half-filled custom-item form.
-- **Edit Goals and Set Reset Time open their forms on Home**, switching there first if needed, since both change what the Home cards show. Only one of the two is open at a time.
+- **The ⋮ menu is only on the Home screen.** Everything in it acts on Home, so the button hides on Log, Insights and the scan screens, and an open menu closes as you leave. Edit Goals and Set Reset Time open their forms there, beside the cards they change; only one of the two is open at a time.
 - **Taking a macro off Home only hides its card.** All four are always credited, stored, logged and targeted; the hidden cards are still built and kept current, so ticking one back on shows the right number immediately. The results screen, custom-item form and goals form always show all four. Which cards show is picked in Edit Goals (see below); the `onHome` flags in `MACROS` are only the defaults.
 
 ## Daily counter and goals

@@ -189,6 +189,20 @@ check("leaving results through the nav credits nothing",
 
 // ── options menu ──
 
+check("the ⋮ button is hidden on the Log tab", app.el("btn-options").hidden === true);
+app.click("tab-insights");
+check("and on Insights", app.el("btn-options").hidden === true);
+await app.lookup(NUTELLA_BARCODE);
+check("and on the results screen", showing() === "results" && app.el("btn-options").hidden === true, showing());
+app.click("btn-reset");
+check("it shows on Home", showing() === "home" && app.el("btn-options").hidden === false, showing());
+
+app.click("btn-options");
+app.click("tab-log");
+check("leaving Home with the menu open closes it", !menuOpen() && app.el("btn-options").attrs["aria-expanded"] === "false");
+app.click("tab-home");
+check("so it doesn't come back open", !menuOpen() && app.el("btn-options").hidden === false);
+
 check("the options menu starts closed", !menuOpen());
 // A real tap reaches the button's listener, then bubbles to the document's.
 app.click("btn-options");
@@ -204,7 +218,7 @@ app.click("btn-options");
 app.click("btn-edit-goals");
 app.clickDocument("btn-edit-goals");
 check("Edit Goals closes the menu", !menuOpen());
-check("and opens the goals form on Home, from any tab",
+check("and opens the goals form on Home",
       showing() === "home" && app.activeTab() === "home" && app.el("targets-form").hidden === false,
       `${showing()} / form hidden: ${app.el("targets-form").hidden}`);
 app.click("btn-goals-cancel");
